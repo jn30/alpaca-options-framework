@@ -1,0 +1,30 @@
+{
+  "sessions": 23,
+  "trades": 102,
+  "net_pnl": -1245.0,
+  "win_rate_pct": 41.18,
+  "profit_factor": 0.45,
+  "expectancy": -12.21,
+  "avg_win": 24.26,
+  "avg_loss": -37.73,
+  "max_drawdown": -1177.0,
+  "exit_reasons": {
+    "spy_stop": {
+      "trades": 60,
+      "wins": 0,
+      "pnl": -2264.0
+    },
+    "peak_trail": {
+      "trades": 42,
+      "wins": 42,
+      "pnl": 1019.0
+    }
+  },
+  "start": "2026-09-30",
+  "end": "2026-10-30",
+  "entry_slip": 0.01,
+  "exit_slip": 0.01,
+  "intrabar": "stop_first",
+  "strike_steps": 0,
+  "skipped_sessions": []
+}

@@ -1,0 +1,55 @@
+{
+  "start": "2024-02-01",
+  "end": "2026-10-30",
+  "sessions": 690,
+  "entry_times": [
+    "13:00"
+  ],
+  "distances": [
+    2.0,
+    3.0,
+    5.0
+  ],
+  "widths": [
+    1.0,
+    2.0,
+    3.0
+  ],
+  "exits": [
+    "expiry",
+    "safe_1545_050",
+    "safe_1545_100",
+    "safe_1550_050",
+    "safe_1550_000"
+  ],
+  "filters": [
+    "any"
+  ],
+  "slips": {
+    "base": [
+      0.01,
+      0.01
+    ],
+    "high": [
+      0.02,
+      0.02
+    ],
+    "stress": [
+      0.03,
+      0.03
+    ]
+  },
+  "tp_frac": 0.5,
+  "stop_mult": 2.0,
+  "strike_step": 1.0,
+  "skipped_sessions": [
+    {
+      "day": "2024-02-02",
+      "reason": "no option bars"
+    },
+    {
+      "day": "2025-03-10",
+      "reason": "no SPY bars"
+    }
+  ]
+}

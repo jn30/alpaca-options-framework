@@ -46,12 +46,20 @@ from feeds import FeedManager
 from momentum import MomentumEngine, Bar
 from orders import OrderManager
 from risk import RiskManager
+from notifier import notify
 from exit_shadow import ExitShadow
 from gate_shadow import GateShadow
 from orb_filter import ORBFilter
 from signals import check_entry
 from state import BotState, Position
 from strikes import startup_atr, compute_dynamic_strikes
+
+IS_WINDOWS = os.name == "nt"
+for _s in (sys.stdout, sys.stderr):   # Windows consoles/pipes default to cp1252
+    try:
+        _s.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 os.makedirs(config.LOG_DIR, exist_ok=True)
 _today_str = datetime.date.today().strftime("%Y-%m-%d")
@@ -60,7 +68,7 @@ logging.basicConfig(
     format   = "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers = [
         logging.StreamHandler(sys.stdout),
-        logging.FileHandler(f"{config.LOG_DIR}/bot_{_today_str}.log"),
+        logging.FileHandler(f"{config.LOG_DIR}/bot_{_today_str}.log", encoding="utf-8"),
     ],
 )
 logger = logging.getLogger("main")
@@ -321,6 +329,8 @@ def _shadow_gate_entry(symbol: str):
         return
     entry_mid = quote.mid
     qty       = risk_manager.size_trade(entry_mid)
+    if qty <= 0:
+        return
     gate_shadow.enter(symbol, side, strike, qty, entry_mid,
                       bot_state.spy_price, momentum_engine.state.atr5)
 
@@ -368,6 +378,9 @@ async def _evaluate_entry(symbol: str):
 
         entry_mid   = quote.mid
         qty         = risk_manager.size_trade(entry_mid)
+        if qty <= 0:
+            logger.warning("Skip entry %s: buying power too low for even 1 contract.", symbol)
+            return
         limit_price = round(entry_mid * 1.02, 2)
 
         logger.info("Placing entry: %s qty=%d limit=%.2f", symbol, qty, limit_price)
@@ -433,6 +446,8 @@ async def _evaluate_entry(symbol: str):
             entry_atr5       = momentum_engine.state.atr5,
         )
         bot_state.open_position(pos)
+        notify(f"🟢 **ENTRY** {symbol}  {side.upper()} {strike:g}  x{qty} @ ${fill_price:.2f}  "
+               f"(SPY {bot_state.spy_price:.2f})")
         # Exit-parameter shadow twins — observe-only, must never break entry
         try:
             exit_shadow.on_entry(pos)
@@ -460,7 +475,7 @@ def _print_trades():
 
     rows = []
     try:
-        with open(log_path, newline="") as f:
+        with open(log_path, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 if row.get("date") == today:
                     rows.append(row)
@@ -575,7 +590,7 @@ def _restore_daily_pnl():
     daily_pnl    = 0.0
     trades_today = 0
     try:
-        with open(log_path, newline="") as f:
+        with open(log_path, newline="", encoding="utf-8") as f:
             for row in csv.DictReader(f):
                 if row.get("date") == today:
                     daily_pnl    += float(row.get("realized_pnl", 0))
@@ -847,6 +862,8 @@ async def _evaluate_spy_stop(spy_close: float):
     pnl = bot_state.close_position(fill, "spy_stop")
     bot_state.exit_pending = False
     risk_manager.record_trade(pnl)
+    notify(f"{'✅' if pnl >= 0 else '❌'} **EXIT spy_stop** {pos.symbol} x{pos.qty} "
+           f"@ ${fill:.2f}  P&L **${pnl:+.2f}**  (Tag ${risk_manager.daily_pnl:+.2f})")
 
     icon = "✅" if pnl >= 0 else "❌"
     logger.info(
@@ -917,6 +934,8 @@ async def _evaluate_exit(quote):
     pnl = bot_state.close_position(fill, reason)
     bot_state.exit_pending = False
     risk_manager.record_trade(pnl)
+    notify(f"{'✅' if pnl >= 0 else '❌'} **EXIT {reason}** {pos.symbol} x{pos.qty} "
+           f"@ ${fill:.2f}  P&L **${pnl:+.2f}**  (Tag ${risk_manager.daily_pnl:+.2f})")
 
     icon = "✅" if pnl >= 0 else "❌"
     logger.info("%s %s: %s fill=%.2f pnl=$%.2f | daily=$%.2f trades=%d",
@@ -1158,15 +1177,46 @@ async def _force_close_all():
     fill  = order_manager.get_fill_price(order) if order else pos.entry_price * 0.5
     pnl   = bot_state.close_position(fill, "time_stop")
     risk_manager.record_trade(pnl)
+    notify(f"{'✅' if pnl >= 0 else '❌'} **EXIT time_stop** {pos.symbol} x{pos.qty} "
+           f"@ ${fill:.2f}  P&L **${pnl:+.2f}**  (Tag ${risk_manager.daily_pnl:+.2f})")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
+
+RESTART_EXIT_CODE = 75   # run_bot.bat relaunches the bot when it sees this
+
+
+def _restart_process():
+    """Restart the bot. POSIX: re-exec in place. Windows: os.exec* spawns a
+    detached process that fights the old console, so exit with a dedicated code
+    and let run_bot.bat start a fresh instance. Without the wrapper this simply
+    stops the bot; open positions are recovered on the next manual start."""
+    if IS_WINDOWS:
+        logging.shutdown()
+        os._exit(RESTART_EXIT_CODE)
+    os.execl(sys.executable, sys.executable, *sys.argv)
+
+
+def _load_account_limits():
+    """Scale risk limits to the account. Uses last_equity (prior close) so the
+    limits are identical all day and after a mid-session restart."""
+    if not config.DYNAMIC_RISK:
+        return
+    try:
+        acct = order_manager._client.get_account()
+        equity = float(acct.last_equity or acct.equity)
+        bp = float(getattr(acct, "options_buying_power", None) or acct.buying_power)
+        risk_manager.set_account(equity, bp)
+    except Exception as e:
+        logger.warning("Could not read account (%s) — using fixed-dollar risk limits.", e)
+
 
 async def main():
     global _feed, _baseline_atr, _market_open_event
 
     _market_open_event = asyncio.Event()
     risk_manager.reset_day()
+    _load_account_limits()
     gate_shadow.reset_day()
     _restore_daily_pnl()   # replay today's closed trades after a restart
 
@@ -1258,16 +1308,28 @@ async def main():
         asyncio.create_task(_do())
 
     for sig in (signal.SIGINT, signal.SIGTERM):
-        loop.add_signal_handler(sig, _signal_shutdown)
+        if IS_WINDOWS:
+            # asyncio has no add_signal_handler on Windows (NotImplementedError).
+            signal.signal(sig, lambda *_: loop.call_soon_threadsafe(_signal_shutdown))
+        else:
+            loop.add_signal_handler(sig, _signal_shutdown)
 
     def _keyboard_watcher():
         print("  >> Bot running.  q = quit  |  r = restart (keeps positions)  |  t = trades  |  o = options")
         while not _shutdown_event.is_set():
             try:
                 # Poll stdin with 1s timeout — never blocks indefinitely
-                ready, _, _ = select.select([sys.stdin], [], [], 1.0)
+                # (Windows: select() only supports sockets, so block on readline —
+                # fine, this is a daemon thread.)
+                if IS_WINDOWS:
+                    ready = True
+                else:
+                    ready, _, _ = select.select([sys.stdin], [], [], 1.0)
                 if ready:
-                    line = sys.stdin.readline().strip().lower()
+                    raw = sys.stdin.readline()
+                    if raw == "":      # EOF (no console attached) — stop polling
+                        break
+                    line = raw.strip().lower()
                     if line == "q":
                         logger.info("Keyboard quit requested.")
                         future = asyncio.run_coroutine_threadsafe(_shutdown("keyboard"), loop)
@@ -1286,7 +1348,7 @@ async def main():
                             # Event loop may be frozen — restart anyway, position
                             # stays on Alpaca and will be recovered on next startup.
                             logger.warning("Event loop unresponsive — forcing restart.")
-                        os.execl(sys.executable, sys.executable, *sys.argv)
+                        _restart_process()
                     elif line == "t":
                         _print_trades()
                     elif line == "o":
@@ -1324,7 +1386,7 @@ async def main():
                     stale,
                 )
                 _time.sleep(1)   # let the log flush
-                os.execl(sys.executable, sys.executable, *sys.argv)
+                _restart_process()
 
     threading.Thread(target=_watchdog, daemon=True, name="watchdog").start()
     logger.info(
@@ -1350,4 +1412,8 @@ async def main():
 
 
 if __name__ == "__main__":
+    if config.STRATEGY != "directional":
+        sys.exit(f"config.STRATEGY is '{config.STRATEGY}', not 'directional' — refusing to "
+                 f"start the directional bot. Set STRATEGY = \"directional\" in config.py "
+                 f"or run with BOT_STRATEGY=directional.")
     asyncio.run(main())

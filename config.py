@@ -1,10 +1,60 @@
 import os
 from zoneinfo import ZoneInfo
 
+# ── Secrets: loaded from .env next to this file (gitignored — never commit) ─────
+# .env format, one per line:  ALPACA_API_KEY=...  ALPACA_API_SECRET=...  DISCORD_WEBHOOK_URL=...
+# Real environment variables take precedence over .env.
+def _load_dotenv(path: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")):
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    k, v = line.split("=", 1)
+                    os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+    except OSError:
+        pass
+
+
+_load_dotenv()
+
 # ── API credentials ────────────────────────────────────────────────────────────
-ALPACA_API_KEY    = "YOUR_ALPACA_API_KEY_HERE"
-ALPACA_API_SECRET = "YOUR_ALPACA_API_SECRET_HERE"
+ALPACA_API_KEY    = os.environ.get("ALPACA_API_KEY", "YOUR_ALPACA_API_KEY_HERE")
+ALPACA_API_SECRET = os.environ.get("ALPACA_API_SECRET", "YOUR_ALPACA_API_SECRET_HERE")
 PAPER             = True   # set False only after paper validation passes
+
+# ── Discord: every individual trade is posted here (empty = off) ───────────────
+# Treat this URL like a password: anyone who has it can post to your channel.
+DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
+
+# ── Which strategy runs on this account ────────────────────────────────────────
+# "directional" -> main.py          (0DTE momentum calls/puts)
+# "condor"      -> condor_paper.py  (one 0DTE SPY iron condor per session)
+# Only ONE strategy may run per account: the directional bot closes any option
+# position it doesn't track ("ghost sweep") and cancels all open option orders,
+# which would tear a condor apart. Each entry point refuses to start unless this
+# matches. Override per run without editing the file:  BOT_STRATEGY=directional
+STRATEGY          = os.environ.get("BOT_STRATEGY", "condor").strip().lower()
+
+# Iron-condor settings (used by condor_paper.py; CLI flags override these)
+CONDOR_ENTRY_TIME   = "13:00"   # ET
+CONDOR_DISTANCE     = 2.0       # short strikes this many $ from spot
+CONDOR_WIDTH        = 3.0       # spread width in $
+CONDOR_QTY          = 1         # contracts per condor when CONDOR_SIZING = "fixed"
+CONDOR_UNDERLYING   = "SPY"     # "SPY" | "SPXW" | "auto" (auto = SPXW once equity >= CONDOR_AUTO_MIN_EQUITY)
+CONDOR_AUTO_MIN_EQUITY = 5000   # account equity at which "auto" switches SPY -> SPXW
+CONDOR_SPX_SCALE    = 10        # SPXW structure = SPY structure x this (2$/3$ -> 20/30 pts)
+CONDOR_SPX_STEP     = 5         # SPXW strike increment
+CONDOR_SPX_SHADOW   = True      # while trading SPY, log the SPXW twin's quotes/spreads each day (no orders)
+CONDOR_SIZING       = "scaled"  # "scaled" = 1 condor per CONDOR_EQUITY_PER_CONTRACT of equity (min 1) | "fixed" = CONDOR_QTY | "max" = all buying power (ruined a $1000 account in the backtest)
+CONDOR_EQUITY_PER_CONTRACT = 3000   # backtest: 1 contract on $1000 = max drawdown -25%; 3 contracts = -98% (ruin)
+CONDOR_BP_FRACTION  = 0.95      # share of buying power "max" may use (buffer for fills/rounding)
+CONDOR_EXIT         = "expiry"  # "expiry" (hold, log settlement) or "close1555"
+CONDOR_MAX_CONCEDE  = 3         # cents conceded from mid while working the entry
+CONDOR_MIN_CREDIT   = 0.25      # skip the session if mid credit is below this
+CONDOR_MAX_CREDIT_FRAC = 0.60  # sanity: skip if mid credit exceeds this share of the width (bad quotes)
+CONDOR_LOOP         = True      # keep the process running: one condor per trading day, no daily restart
+CONDOR_SUBMIT       = True      # False = dry-run (prints the order); True = send real PAPER orders
 
 # ── Universe ───────────────────────────────────────────────────────────────────
 UNDERLYING        = "SPY"
@@ -42,6 +92,14 @@ REQUIRE_DELTA_RISING = False
 # ── Risk & sizing ──────────────────────────────────────────────────────────────
 MAX_RISK_PER_TRADE = 150.00   # dollars at risk per trade (stop loss basis)
 MAX_DAILY_LOSS     = 300.00   # hard daily loss limit — bot shuts down entries
+# Dynamic sizing: when True, the three limits below scale with start-of-day account
+# equity (read from Alpaca at startup) instead of the fixed dollar values above, and
+# position size is also capped by options buying power. The fixed-dollar values stay
+# as the fallback if the account can't be read, and are what the backtest uses.
+DYNAMIC_RISK         = True
+MAX_RISK_PCT         = 0.05    # risk per trade (stop-loss basis) as a fraction of equity
+MAX_DAILY_LOSS_PCT   = 0.10    # daily loss lock
+PROFIT_TARGET_PCT    = 0.04    # daily profit-target lock ("keep the money")
 MAX_TRADES_PER_DAY = 999      # effectively unlimited during paper/data collection
 TRADE_COOLDOWN_BARS = 3       # 1-min bars to wait after a trade closes before re-entering
 

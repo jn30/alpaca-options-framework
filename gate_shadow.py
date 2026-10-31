@@ -125,7 +125,7 @@ class GateShadow:
             day = datetime.datetime.now(tz=config.ET).strftime("%Y-%m-%d")
             path = os.path.join(config.LOG_DIR, f"gate_shadow_{day}.csv")
             new = not os.path.exists(path)
-            with open(path, "a", newline="") as f:
+            with open(path, "a", newline="", encoding="utf-8") as f:
                 w = csv.writer(f)
                 if new:
                     w.writerow(["date", "lock_reason", "symbol", "side", "qty",

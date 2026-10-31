@@ -1,0 +1,621 @@
+{
+  "start": "2024-02-01",
+  "end": "2026-10-30",
+  "sessions": 690,
+  "variants": [
+    {
+      "name": "baseline",
+      "args": {},
+      "config": {}
+    },
+    {
+      "name": "dash_tight_trail",
+      "args": {},
+      "config": {
+        "PEAK_TRAIL_PCT": 0.92
+      }
+    },
+    {
+      "name": "dash_wide_stop",
+      "args": {},
+      "config": {
+        "STOP_MULT": 0.25,
+        "TP_MULT": 1.0
+      }
+    },
+    {
+      "name": "dash_both",
+      "args": {},
+      "config": {
+        "STOP_MULT": 0.25,
+        "TP_MULT": 1.0,
+        "PEAK_TRAIL_PCT": 0.92
+      }
+    },
+    {
+      "name": "no_spy_stop",
+      "args": {},
+      "config": {
+        "SPY_STOP_FLOOR": 999.0,
+        "SPY_STOP_ATR_MULT": 0.0
+      }
+    },
+    {
+      "name": "tp_2_0",
+      "args": {},
+      "config": {
+        "TP_MULT": 2.0
+      }
+    },
+    {
+      "name": "tp_1_25",
+      "args": {},
+      "config": {
+        "TP_MULT": 1.25
+      }
+    },
+    {
+      "name": "stop_0_4",
+      "args": {},
+      "config": {
+        "STOP_MULT": 0.4
+      }
+    },
+    {
+      "name": "stop_0_6",
+      "args": {},
+      "config": {
+        "STOP_MULT": 0.6
+      }
+    },
+    {
+      "name": "trail_0_85",
+      "args": {},
+      "config": {
+        "PEAK_TRAIL_PCT": 0.85
+      }
+    },
+    {
+      "name": "trail_activate_1_5",
+      "args": {},
+      "config": {
+        "PEAK_TRAIL_ACTIVATE": 1.5
+      }
+    },
+    {
+      "name": "spy_floor_0_5",
+      "args": {
+        "spy_stop_floor": "0.5"
+      },
+      "config": {}
+    },
+    {
+      "name": "spy_floor_1_0",
+      "args": {
+        "spy_stop_floor": "1.0"
+      },
+      "config": {}
+    },
+    {
+      "name": "spy_floor_1_5",
+      "args": {
+        "spy_stop_floor": "1.5"
+      },
+      "config": {}
+    },
+    {
+      "name": "spy_floor_2_0",
+      "args": {
+        "spy_stop_floor": "2.0"
+      },
+      "config": {}
+    },
+    {
+      "name": "spy_mult_1_5",
+      "args": {
+        "spy_stop_mult": "1.5"
+      },
+      "config": {}
+    },
+    {
+      "name": "time_15_00",
+      "args": {
+        "time_stop": "15:00:00"
+      },
+      "config": {}
+    },
+    {
+      "name": "entry_10_00",
+      "args": {},
+      "config": {
+        "ENTRY_START": "10:00"
+      }
+    },
+    {
+      "name": "entry_11_00",
+      "args": {},
+      "config": {
+        "ENTRY_START": "11:00"
+      }
+    },
+    {
+      "name": "entry_end_11_00",
+      "args": {},
+      "config": {
+        "ENTRY_END": "11:00"
+      }
+    },
+    {
+      "name": "entry_end_13_00",
+      "args": {},
+      "config": {
+        "ENTRY_END": "13:00"
+      }
+    },
+    {
+      "name": "atr_min_0_10",
+      "args": {},
+      "config": {
+        "ATR5_MIN_ENTRY": 0.1
+      }
+    },
+    {
+      "name": "atr_min_0_30",
+      "args": {},
+      "config": {
+        "ATR5_MIN_ENTRY": 0.3
+      }
+    },
+    {
+      "name": "cooldown_0",
+      "args": {},
+      "config": {
+        "TRADE_COOLDOWN_BARS": 0
+      }
+    },
+    {
+      "name": "no_risk_gates",
+      "args": {},
+      "config": {
+        "PROFIT_TARGET": 0.0,
+        "CONSEC_WIN_STOP": 0,
+        "MAX_DAILY_LOSS": 1000000000.0
+      }
+    },
+    {
+      "name": "strike_p1",
+      "args": {
+        "strike_steps": "1"
+      },
+      "config": {}
+    },
+    {
+      "name": "strike_p2",
+      "args": {
+        "strike_steps": "2"
+      },
+      "config": {}
+    },
+    {
+      "name": "slip_0",
+      "args": {
+        "entry_slip": "0.0",
+        "exit_slip": "0.0"
+      },
+      "config": {}
+    },
+    {
+      "name": "slip_2",
+      "args": {
+        "entry_slip": "0.02",
+        "exit_slip": "0.02"
+      },
+      "config": {}
+    },
+    {
+      "name": "optimistic",
+      "args": {
+        "entry_slip": "0.0",
+        "exit_slip": "0.0",
+        "optimistic_intrabar": "True"
+      },
+      "config": {}
+    },
+    {
+      "name": "combo_spy10_strike1",
+      "args": {
+        "spy_stop_floor": "1.0",
+        "strike_steps": "1"
+      },
+      "config": {}
+    },
+    {
+      "name": "combo_spy10_trail092",
+      "args": {
+        "spy_stop_floor": "1.0"
+      },
+      "config": {
+        "PEAK_TRAIL_PCT": 0.92
+      }
+    },
+    {
+      "name": "combo_spy10_tp2",
+      "args": {
+        "spy_stop_floor": "1.0"
+      },
+      "config": {
+        "TP_MULT": 2.0
+      }
+    },
+    {
+      "name": "combo_no_spy_tp2",
+      "args": {},
+      "config": {
+        "SPY_STOP_FLOOR": 999.0,
+        "SPY_STOP_ATR_MULT": 0.0,
+        "TP_MULT": 2.0
+      }
+    }
+  ],
+  "config": {
+    "TP_MULT": 1.5,
+    "STOP_MULT": 0.5,
+    "PEAK_TRAIL_ACTIVATE": 1.2,
+    "PEAK_TRAIL_PCT": 0.88,
+    "SPY_STOP_ATR_MULT": 0.75,
+    "SPY_STOP_FLOOR": 0.1,
+    "ENTRY_START": "09:45",
+    "ENTRY_END": "12:00",
+    "TIME_STOP": "15:25",
+    "ATR5_MIN_ENTRY": 0.2,
+    "MAX_RISK_PER_TRADE": 150.0,
+    "MAX_DAILY_LOSS": 300.0,
+    "PROFIT_TARGET": 125.0,
+    "CONSEC_WIN_STOP": 3,
+    "TRADE_COOLDOWN_BARS": 3,
+    "ACTIVATION_PCT": 0.003,
+    "STRIKE_STEP": 1.0
+  },
+  "skipped": {
+    "baseline": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "dash_tight_trail": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "dash_wide_stop": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "dash_both": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "no_spy_stop": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "tp_2_0": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "tp_1_25": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "stop_0_4": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "stop_0_6": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "trail_0_85": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "trail_activate_1_5": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "spy_floor_0_5": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "spy_floor_1_0": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "spy_floor_1_5": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "spy_floor_2_0": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "spy_mult_1_5": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "time_15_00": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "entry_10_00": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "entry_11_00": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "entry_end_11_00": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "entry_end_13_00": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "atr_min_0_10": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "atr_min_0_30": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "cooldown_0": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "no_risk_gates": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "strike_p1": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "strike_p2": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "slip_0": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "slip_2": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "optimistic": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "combo_spy10_strike1": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "combo_spy10_trail092": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "combo_spy10_tp2": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ],
+    "combo_no_spy_tp2": [
+      {
+        "day": "2024-02-02",
+        "reason": "no option bars"
+      },
+      {
+        "day": "2025-03-10",
+        "reason": "no SPY bars"
+      }
+    ]
+  }
+}

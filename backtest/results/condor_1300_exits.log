@@ -1,0 +1,34 @@
+Loading SPY bars 2024-02-01 .. 2026-10-30 ...
+  690 sessions, 268784 minute bars
+Running 108 condor variants ...
+Skipped 2 sessions (first: (datetime.date(2024, 2, 2), 'no option bars'))
+Aggregating 108 variants x 64 periods ...
+Wrote backtest\results\condor_1300_exits\condor_summary.csv (6912 rows)
+Wrote backtest\results\condor_1300_exits\condor_daily.csv
+Wrote backtest\results\condor_1300_exits\condor_trades.csv
+Wrote condor_meta.json
+
+Top 15 condor variants over the full range (2024-02-01 .. 2026-10-30):
+variant                                trades        net     WR     BE    PF  credit    ROR
+1300_d2_w3_expiry_any_base                644   +6600.87  84.8%  78.1%  1.56    0.39  14.9%
+1300_d2_w2_expiry_any_base                638   +4564.30  84.0%  78.2%  1.47    0.31  18.2%
+1300_d2_w3_expiry_any_high                597   +3810.92  83.6%  79.4%  1.32    0.37  14.0%
+1300_d3_w3_expiry_any_base                532   +3364.42  88.9%  84.9%  1.43    0.27  10.0%
+1300_d3_w2_expiry_any_base                492   +2191.13  87.8%  84.2%  1.35    0.22  12.5%
+1300_d5_w2_eod_1555_any_base              227   +1825.56  52.0%  40.7%  1.58    0.16   8.7%
+1300_d5_w3_eod_1555_any_base              262   +1790.52  56.1%  46.9%  1.45    0.20   7.0%
+1300_d2_w2_expiry_any_high                577   +1628.30  82.7%  80.4%  1.16    0.28  16.6%
+1300_d2_w1_expiry_any_base                590   +1557.42  82.2%  78.7%  1.25    0.18  22.7%
+1300_d5_w2_eod_1555_any_high              146   +1322.78  43.1%  34.2%  1.46    0.17   9.5%
+1300_d5_w2_eod_1555_any_stress             96   +1209.33  44.8%  35.4%  1.48    0.19  10.5%
+1300_d3_w3_expiry_any_high                418   +1198.70  86.1%  84.3%  1.15    0.29  10.6%
+1300_d2_w3_expiry_any_stress              524   +1092.73  82.1%  80.8%  1.09    0.36  13.8%
+1300_d5_w3_expiry_any_base                262   +1059.71  91.6%  89.2%  1.31    0.20   7.0%
+1300_d5_w3_eod_1555_any_stress            122    +886.00  45.1%  39.4%  1.26    0.25   9.0%
+
+Bottom 5:
+1300_d2_w3_eod_1530_any_stress            524  -11893.05  34.5%  71.7%  0.21    0.36  13.8%
+1300_d2_w2_eod_1530_any_stress            485  -12158.13  26.8%  77.9%  0.10    0.28  16.3%
+1300_d2_w3_eod_1555_any_stress            524  -13407.13  48.3%  74.8%  0.32    0.36  13.8%
+1300_d2_w2_eod_1555_any_stress            485  -14710.30  40.6%  77.8%  0.20    0.28  16.3%
+1300_d2_w2_eod_1545_any_stress            485  -14900.03  30.3%  78.1%  0.12    0.28  16.3%

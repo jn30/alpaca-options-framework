@@ -5,6 +5,10 @@
 # Logs and trade data
 logs/
 
+# Backtest data cache (large; regenerated on demand)
+backtest_cache/
+backtest/cache/
+
 # Python
 __pycache__/
 *.py[cod]

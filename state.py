@@ -108,7 +108,7 @@ class BotState:
     def _ensure_log(self):
         os.makedirs(config.LOG_DIR, exist_ok=True)
         if not os.path.exists(self._log_path):
-            with open(self._log_path, "w", newline="") as f:
+            with open(self._log_path, "w", newline="", encoding="utf-8") as f:
                 writer = csv.writer(f)
                 writer.writerow([
                     "date", "symbol", "side", "strike",
@@ -125,7 +125,7 @@ class BotState:
         partial_qty:  Optional[int] = None,
     ):
         qty = partial_qty if partial_qty is not None else pos.qty_remaining
-        with open(self._log_path, "a", newline="") as f:
+        with open(self._log_path, "a", newline="", encoding="utf-8") as f:
             writer = csv.writer(f)
             writer.writerow([
                 datetime.date.today().isoformat(),

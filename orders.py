@@ -164,7 +164,7 @@ class OrderManager:
                 logger.info("Filled: %s avg=%.2f", order_id,
                             float(order.filled_avg_price or 0))
                 return order
-            if order.status in (OrderStatus.CANCELLED, OrderStatus.EXPIRED,
+            if order.status in (OrderStatus.CANCELED, OrderStatus.EXPIRED,
                                 OrderStatus.REJECTED):
                 logger.warning("Order %s terminal: %s", order_id, order.status)
                 return None

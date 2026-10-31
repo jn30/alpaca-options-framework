@@ -23,6 +23,41 @@ class RiskManager:
         self._lock_reason:   str   = ""      # why we locked: loss / target / win_streak
         self._consec_wins:   int   = 0       # consecutive winning trades (resets on a loss)
         self._cooldown_bars: int   = 0       # bars remaining before next entry allowed
+        # Account snapshot for dynamic sizing. None = use the fixed-dollar limits
+        # from config (this is also what the backtest uses).
+        self._equity:        float | None = None
+        self._buying_power:  float | None = None
+
+    # ── Account-based limits ──────────────────────────────────────────────────
+
+    def set_account(self, equity: float, buying_power: float | None = None):
+        """Scale risk limits to the account. Pass start-of-day equity so the
+        limits stay constant through the session and across restarts."""
+        if equity and equity > 0:
+            self._equity = float(equity)
+        if buying_power is not None and buying_power >= 0:
+            self._buying_power = float(buying_power)
+        logger.info("Account set: equity=%s buying_power=%s -> risk/trade $%.2f, "
+                    "daily loss $%.2f, profit target $%.2f",
+                    self._equity, self._buying_power, self.max_risk_per_trade,
+                    self.max_daily_loss, self.profit_target)
+
+    def _dynamic(self) -> bool:
+        return bool(config.DYNAMIC_RISK and self._equity)
+
+    @property
+    def max_risk_per_trade(self) -> float:
+        return self._equity * config.MAX_RISK_PCT if self._dynamic() else config.MAX_RISK_PER_TRADE
+
+    @property
+    def max_daily_loss(self) -> float:
+        return self._equity * config.MAX_DAILY_LOSS_PCT if self._dynamic() else config.MAX_DAILY_LOSS
+
+    @property
+    def profit_target(self) -> float:
+        if self._dynamic():
+            return self._equity * config.PROFIT_TARGET_PCT
+        return config.PROFIT_TARGET
 
     # ── Queries ───────────────────────────────────────────────────────────────
 
@@ -76,11 +111,18 @@ class RiskManager:
         if entry_price <= 0:
             return 0
         risk_per_contract = entry_price * (1.0 - config.STOP_MULT) * 100
-        contracts = math.floor(config.MAX_RISK_PER_TRADE / risk_per_contract)
-        contracts = max(1, contracts)
+        contracts = max(1, math.floor(self.max_risk_per_trade / risk_per_contract))
+        if self._dynamic() and self._buying_power is not None:
+            # Entry limit is mid × 1.02, so budget for that.
+            cost_per_contract = entry_price * 1.02 * 100
+            affordable = math.floor(self._buying_power / cost_per_contract)
+            if affordable < contracts:
+                logger.warning("Sizing capped by buying power: $%.2f allows %d, risk wanted %d",
+                               self._buying_power, affordable, contracts)
+            contracts = min(contracts, affordable)   # may be 0 -> caller skips the trade
         logger.info(
-            "Sizing: entry=%.2f risk/contract=$%.2f → %d contract(s)",
-            entry_price, risk_per_contract, contracts,
+            "Sizing: entry=%.2f risk/contract=$%.2f budget=$%.2f → %d contract(s)",
+            entry_price, risk_per_contract, self.max_risk_per_trade, contracts,
         )
         return contracts
 
@@ -108,14 +150,14 @@ class RiskManager:
         Locks gate NEW entries only — an open position still exits normally."""
         if self._locked:
             return
-        if self._daily_pnl <= -config.MAX_DAILY_LOSS:
+        if self._daily_pnl <= -self.max_daily_loss:
             self._locked, self._lock_reason = True, "daily loss limit"
             logger.warning("DAILY LOSS LIMIT HIT ($%.2f). No new entries for rest of session.",
                            self._daily_pnl)
-        elif config.PROFIT_TARGET and self._daily_pnl >= config.PROFIT_TARGET:
+        elif self.profit_target and self._daily_pnl >= self.profit_target:
             self._locked, self._lock_reason = True, "profit target"
             logger.warning("PROFIT TARGET HIT ($%.2f ≥ $%.2f). Keeping the money — no new entries.",
-                           self._daily_pnl, config.PROFIT_TARGET)
+                           self._daily_pnl, self.profit_target)
         elif config.CONSEC_WIN_STOP and self._consec_wins >= config.CONSEC_WIN_STOP:
             self._locked, self._lock_reason = True, "win streak"
             logger.warning("WIN STREAK HIT (%d in a row, daily $%.2f). Keeping the money — no new entries.",
@@ -142,10 +184,10 @@ class RiskManager:
         self._daily_pnl    = daily_pnl
         self._trades_today = trades_today
         self._consec_wins  = 0
-        if self._daily_pnl <= -config.MAX_DAILY_LOSS:
+        if self._daily_pnl <= -self.max_daily_loss:
             self._locked, self._lock_reason = True, "daily loss limit"
             logger.warning("Daily loss limit already hit ($%.2f) — gate LOCKED.", self._daily_pnl)
-        elif config.PROFIT_TARGET and self._daily_pnl >= config.PROFIT_TARGET:
+        elif self.profit_target and self._daily_pnl >= self.profit_target:
             self._locked, self._lock_reason = True, "profit target"
             logger.warning("Profit target already hit ($%.2f) — gate LOCKED.", self._daily_pnl)
         logger.info(

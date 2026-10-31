@@ -80,13 +80,13 @@ def _zone(spy_price: float, strike: float) -> str:
     return "dead"
 
 
-def _in_entry_window() -> bool:
-    now_et = datetime.datetime.now(tz=config.ET).strftime("%H:%M")
+def _in_entry_window(now: Optional[datetime.datetime] = None) -> bool:
+    now_et = (now or datetime.datetime.now(tz=config.ET)).strftime("%H:%M")
     return config.ENTRY_START <= now_et <= config.ENTRY_END
 
 
-def _past_time_stop() -> bool:
-    now_et = datetime.datetime.now(tz=config.ET).strftime("%H:%M")
+def _past_time_stop(now: Optional[datetime.datetime] = None) -> bool:
+    now_et = (now or datetime.datetime.now(tz=config.ET)).strftime("%H:%M")
     return now_et >= config.TIME_STOP
 
 
@@ -103,6 +103,7 @@ def check_entry(
     trades_today:  int,
     has_open_pos:  bool,
     atr5:          float = 0.0,     # 5-bar ATR at entry bar — used for ATR gate
+    now:           Optional[datetime.datetime] = None,  # override for backtests
 ) -> bool:
     """
     Returns True when all entry conditions are satisfied.
@@ -113,7 +114,7 @@ def check_entry(
         return False
     if trades_today >= config.MAX_TRADES_PER_DAY:
         return False
-    if not _in_entry_window():
+    if not _in_entry_window(now):
         return False
 
     # ATR gate — requires minimum intrabar velocity to support a gamma move
