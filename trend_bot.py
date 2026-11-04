@@ -137,9 +137,12 @@ def rebalance(trading: TradingClient, target: str, other: str, submit: bool) -> 
     return "; ".join(actions) or "nothing to do"
 
 
-def run_check(stock, trading, submit: bool) -> None:
+def run_check(stock, trading, submit: bool, force: str | None = None) -> None:
     today = dt.datetime.now(ET).date()
     above, last, sma = sma_signal(stock, today)
+    if force:                      # test hook: exercise the switch path regardless of the signal
+        logger.warning("FORCED %s (real signal: %s)", force, "on" if above else "off")
+        above = force == "on"
     target, other = ((config.TREND_RISK_ON, config.TREND_RISK_OFF) if above
                      else (config.TREND_RISK_OFF, config.TREND_RISK_ON))
     before = holdings(trading)
@@ -149,7 +152,8 @@ def run_check(stock, trading, submit: bool) -> None:
     logger.info("%s %.2f vs SMA%d %.2f -> %s | %s | equity $%.2f%s", config.TREND_SIGNAL, last,
                 config.TREND_SMA, sma, target, result, eq, "" if submit else " (DRY)")
     log_csv(DAILY_CSV, ["date", "spy", "sma", "signal", "target", "action", "equity"],
-            [today.isoformat(), f"{last:.2f}", f"{sma:.2f}", int(above), target, result, f"{eq:.2f}"])
+            [today.isoformat(), f"{last:.2f}", f"{sma:.2f}", int(above), target,
+             (f"FORCED {force}: " if force else "") + result, f"{eq:.2f}"])
     if switched or result.startswith("BUY") and before[target] < 1.0:
         notify(f"{'📈' if above else '🛡️'} **TREND-Bot {today}**: {config.TREND_SIGNAL} {last:.2f} "
                f"{'über' if above else 'unter'} SMA{config.TREND_SMA} {sma:.2f} → **{target}**  "
@@ -160,7 +164,11 @@ def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--now", action="store_true", help="one check right now, then exit")
     ap.add_argument("--dry", action="store_true", help="never send orders")
+    ap.add_argument("--force", choices=("on", "off"),
+                    help="with --now: act as if the signal were on/off (paper switch test)")
     args = ap.parse_args()
+    if args.force and not args.now:
+        ap.error("--force only works together with --now")
     submit = config.TREND_SUBMIT and not args.dry
 
     if config.STRATEGY != "trend":
@@ -193,7 +201,10 @@ def main() -> int:
         logger.warning("Account holds other positions the trend bot will NOT touch: %s", others)
 
     if args.now:
-        run_check(stock, trading, submit)
+        if args.force and not config.PAPER:
+            print("Refusing: --force is a paper-only test.", file=sys.stderr)
+            return 2
+        run_check(stock, trading, submit, args.force)
         return 0
 
     logger.info("Trend bot loop: %s/%s on %s vs SMA%d, check %d min before the close%s.",
