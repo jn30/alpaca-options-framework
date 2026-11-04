@@ -9,8 +9,11 @@ an assumed slippage. This script trades ONE condor per day on the Alpaca paper
 account and logs the real fill versus the quote mid, so the slippage assumption
 can be measured instead of guessed.
 
-Default variant = best low-drawdown cell of the sweep:
-    entry 12:00 ET, short strikes 2$ from spot, 3$ wide, held to expiry.
+Default variant (config.py): entry 13:00 ET, short strikes 2$ from spot, 3$ wide,
+bought back by the bot at 15:40 ET. Holding to expiry is not realizable on
+Alpaca paper: the broker buys 0DTE short legs back itself at ~15:45 ET.
+After each exit the real P&L is rebuilt from the account's fills
+(condor_reconcile.py) and written to realized_pnl / pnl_per_contract.
 
 It is deliberately separate from main.py (the directional bot) and does not
 touch its state, risk manager or log files.
@@ -60,6 +63,7 @@ from alpaca.trading.enums import (
 from alpaca.trading.requests import GetCalendarRequest, LimitOrderRequest, OptionLegRequest
 
 import config
+from condor_reconcile import realized_for_row
 from notifier import notify
 from strikes import build_occ_symbol
 
@@ -402,6 +406,11 @@ def main() -> int:
         print("Refusing to submit: config.PAPER is False. This probe is paper-only.", file=sys.stderr)
         return 2
 
+    close_at = parse_exit(args.exit)
+    if close_at is None or close_at >= dt.time(15, 45):
+        logger.warning("exit=%s: Alpaca buys 0DTE short legs back itself at ~15:45 ET, so this "
+                       "exit will not happen as configured — use closeHHMM before 15:45.", args.exit)
+
     stock = StockHistoricalDataClient(config.ALPACA_API_KEY, config.ALPACA_API_SECRET)
     opt = OptionHistoricalDataClient(config.ALPACA_API_KEY, config.ALPACA_API_SECRET)
     trading = TradingClient(config.ALPACA_API_KEY, config.ALPACA_API_SECRET, paper=config.PAPER)
@@ -564,7 +573,27 @@ def finish_position(args, stock, opt, trading, st: dict) -> int:
         logger.info("SPY close %.2f — theoretical settlement P&L $%.2f = $%.2f per contract "
                     "(check real assignment/exercise in the paper account)", close, theo, theo / qty)
 
-    # Ground truth: the account's equity change over the trade (one strategy per
+    # Ground truth #1: rebuild the P&L from the account's own fills. Catches the
+    # broker buying legs back early (Alpaca closes 0DTE shorts at ~15:45 ET even
+    # when we "hold to expiry"), which the theoretical settlement can't see.
+    time.sleep(30)                           # let the last fills post to the activity feed
+    rec = realized_for_row(trading, row) if row.get("underlying", "SPY") == "SPY" else None
+    if rec is not None:
+        real = rec["real_pnl"]
+        row["realized_pnl"] = f"{real:.2f}"
+        row["pnl_per_contract"] = f"{real / qty:.2f}"
+        if rec["how"].startswith("BROKER"):
+            row["status"] = "broker_closed"
+            logger.warning("Broker closed legs before expiry: %s", rec["how"])
+        logger.info("REAL P&L from account fills: $%.2f ($%.2f per contract; fees post later)",
+                    real, real / qty)
+        notify(f"{'✅' if real >= 0 else '❌'} **CONDOR ECHT** {day}  **${real / qty:+.2f}/Kontrakt** "
+               f"lt. Konto-Fills" + ("  ⚠️ Broker hat vor Verfall geschlossen"
+                                     if row["status"] == "broker_closed" else ""))
+    else:
+        logger.warning("could not reconcile fills — run condor_reconcile.py later")
+
+    # Ground truth #2: the account's equity change over the trade (one strategy per
     # account, so this is the condor's real P&L incl. anything the broker did).
     try:
         eq_after = float(trading.get_account().equity)

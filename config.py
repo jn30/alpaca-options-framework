@@ -49,7 +49,10 @@ CONDOR_SPX_SHADOW   = True      # while trading SPY, log the SPXW twin's quotes/
 CONDOR_SIZING       = "scaled"  # "scaled" = 1 condor per CONDOR_EQUITY_PER_CONTRACT of equity (min 1) | "fixed" = CONDOR_QTY | "max" = all buying power (ruined a $1000 account in the backtest)
 CONDOR_EQUITY_PER_CONTRACT = 3000   # backtest: 1 contract on $1000 = max drawdown -25%; 3 contracts = -98% (ruin)
 CONDOR_BP_FRACTION  = 0.95      # share of buying power "max" may use (buffer for fills/rounding)
-CONDOR_EXIT         = "expiry"  # "expiry" (hold, log settlement) or "close1555"
+CONDOR_EXIT         = "close1540"  # "closeHHMM" = bot buys the condor back at that ET time | "expiry" = hold.
+                                   # Alpaca paper buys 0DTE short legs back itself at ~15:45 ET (seen 2026-11-02/03),
+                                   # so "expiry" is NOT realizable there; close before 15:45 to control the exit.
+                                   # Backtest reference for this exit: eod_1545 (-3.48 $/contract, 2024-02..2026-10).
 CONDOR_MAX_CONCEDE  = 3         # cents conceded from mid while working the entry
 CONDOR_MIN_CREDIT   = 0.25      # skip the session if mid credit is below this
 CONDOR_MAX_CREDIT_FRAC = 0.60  # sanity: skip if mid credit exceeds this share of the width (bad quotes)

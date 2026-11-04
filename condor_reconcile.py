@@ -118,6 +118,8 @@ def reconcile(rows: list[dict], acts: list[dict]) -> list[dict]:
 
         real = open_cash + close_cash + stock_cash + settle + fees
         theo = f(r.get("theoretical_pnl"))
+        if theo is None and f(r.get("close_cost")) is not None:   # bot-closed: logged order prices
+            theo = round((f(r["fill_credit"]) - f(r["close_cost"])) * 100 * qty, 2)
         if closes and r.get("exit_mode") == "expiry":
             how = "BROKER close " + ", ".join(closes)
         elif closes:
@@ -137,8 +139,21 @@ def reconcile(rows: list[dict], acts: list[dict]) -> list[dict]:
     return out
 
 
+def realized_for_row(trading: TradingClient, row: dict) -> dict | None:
+    """Reconcile one session (a condor_paper row) against the account. Returns
+    the reconcile() record or None if the activities can't be read. Note: fees
+    and expiry bookings arrive in the evening, so right after the close the
+    figure covers fills only (fees are ~0.30 $/condor)."""
+    try:
+        day = dt.date.fromisoformat(row["date"])
+        res = reconcile([row], fetch_activities(trading, day - dt.timedelta(days=1)))
+        return res[0] if res else None
+    except Exception:
+        return None
+
+
 def summarize(res: list[dict]) -> None:
-    print(f"{'date':<11}{'credit':>8}{'close':>9}{'fees':>7}{'asg/ex':>8}{'REAL':>9}{'theo':>9}"
+    print(f"{'date':<11}{'credit':>8}{'close':>9}{'fees':>7}{'asg/ex':>8}{'REAL':>9}{'logged':>9}"
           f"{'diff':>8}  how")
     for x in res:
         print(f"{x['date']:<11}{x['credit_booked']:>8.2f}{x['close_cash']:>9.2f}{x['fees']:>7.2f}"
@@ -149,8 +164,8 @@ def summarize(res: list[dict]) -> None:
     n = len(real)
     if not n:
         return
-    print(f"\nPer contract:  REAL {st.mean(real):+.2f} $ avg (sum {sum(real):+.2f})"
-          f"   |   theoretical {st.mean(theo):+.2f} $ avg (sum {sum(theo):+.2f})")
+    logged = f"   |   logged {st.mean(theo):+.2f} $ avg (sum {sum(theo):+.2f})" if theo else ""
+    print(f"\nPer contract:  REAL {st.mean(real):+.2f} $ avg (sum {sum(real):+.2f}){logged}")
     if n > 2:
         se = st.stdev(real) / math.sqrt(n)
         print(f"  REAL 95% interval [{st.mean(real) - 1.96 * se:+.2f}, {st.mean(real) + 1.96 * se:+.2f}]"
