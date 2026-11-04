@@ -1,16 +1,21 @@
 #!/usr/bin/env python3
 """
-Trend bot: 2x S&P 500 (SSO) while SPY is above its 200-day SMA, else T-bills (SGOV).
+Trend bot: leveraged S&P 500 (UPRO, 3x) while SPY is above its 200-day SMA,
+else T-bills (SGOV).
 
-Backtest (backtest/leveraged_trend.py, 1988-2026, pre-registered primary):
-    2x + SMA200   CAGR 12.8%  max DD -51%   vs   S&P 500 buy & hold 11.4% / -55%
-    (synthetic 2x ran ~0.35%/yr above the real SSO 2009-2026; the margin over
-    buy & hold is ~1.2%/yr after that -- real, but thin; the price-only test
-    from 1970 beat buy & hold over the full period but not in 2 of 3 sub-periods)
+Backtest (backtest/leveraged_trend.py, cost model calibrated to the real
+SSO/UPRO 2009-2026, slightly pessimistic):
+                      S&P TR 1988-2026        S&P price 1970-2026
+    buy & hold 1x     11.4%/yr  DD -55%       8.4%/yr  DD -57%
+    2x + SMA200       12.5%/yr  DD -52%       9.2%/yr  DD -53%   (pre-registered primary: GO)
+    3x + SMA200       15.7%/yr  DD -70%      10.0%/yr  DD -74%   (<- default: max end value)
+    3x hold           15.6%/yr  DD -98%       3.8%/yr  DD -99%   (no filter: near-ruin in 2000/2008)
+Real ETFs 2009-2026: UPRO+SMA200 24.2%/yr (DD -52%) vs SPY 15.0% (DD -34%).
+Expect drawdowns of 50-70% on the way; the filter is what keeps 3x from ruin.
 
 Once per trading day, 15 minutes before the close:
     signal = SPY last price > SMA200 (199 prior daily closes + today's price)
-    target = TREND_RISK_ON (SSO) if signal else TREND_RISK_OFF (SGOV)
+    target = TREND_RISK_ON (UPRO) if signal else TREND_RISK_OFF (SGOV)
     if not fully in the target: sell the other one, buy the target with all cash
 It touches only the two symbols above and refuses to run next to the option
 bots (one strategy per account).
@@ -26,6 +31,7 @@ import csv
 import datetime as dt
 import logging
 import os
+import socket
 import sys
 import time
 
@@ -48,6 +54,8 @@ for _s in (sys.stdout, sys.stderr):
         pass
 
 ET = config.ET
+LOCK_PORT = 47321          # single-instance guard: two bots would both buy
+_LOCK = None
 TRADES_CSV = os.path.join(config.LOG_DIR, "trend_trades.csv")
 DAILY_CSV = os.path.join(config.LOG_DIR, "trend_daily.csv")
 
@@ -162,6 +170,15 @@ def main() -> int:
     if submit and not config.PAPER:
         print("Refusing: config.PAPER is False. Validate on paper first.", file=sys.stderr)
         return 2
+    if not args.now:
+        global _LOCK                                   # keep the socket open for the process lifetime
+        _LOCK = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            _LOCK.bind(("127.0.0.1", LOCK_PORT))
+        except OSError:
+            print(f"Another trend bot is already running (port {LOCK_PORT} taken) — not starting "
+                  f"a second one.", file=sys.stderr)
+            return 2
     os.makedirs(config.LOG_DIR, exist_ok=True)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s",
                         handlers=[logging.StreamHandler(sys.stdout),

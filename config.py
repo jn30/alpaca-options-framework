@@ -40,7 +40,10 @@ STRATEGY          = os.environ.get("BOT_STRATEGY", "trend").strip().lower()
 # Trend bot (trend_bot.py) — pre-registered in backtest/leveraged_trend.py, do not tune
 TREND_SIGNAL        = "SPY"     # trend measured on this
 TREND_SMA           = 200       # days
-TREND_RISK_ON       = "SSO"     # held while SPY > SMA200 (2x S&P 500)
+TREND_RISK_ON       = "UPRO"    # held while SPY > SMA200 (3x S&P 500). Leverage sweep (calibrated to real
+                                # SSO/UPRO): 3x is at/near max end value with the filter in 1988-2026 TR and
+                                # 1970-2026 price data; real UPRO+SMA200 2009-2026: 24.2%/yr, max DD -52%.
+                                # "SSO" = 2x (the pre-registered primary, GO): 12.5%/yr vs 15.7%/yr for 3x.
 TREND_RISK_OFF      = "SGOV"    # held otherwise (0-3 month T-bills)
 TREND_MINUTES_BEFORE_CLOSE = 15 # daily check time
 TREND_CASH_USE      = 0.98      # share of cash put to work (buffer for notional rounding)

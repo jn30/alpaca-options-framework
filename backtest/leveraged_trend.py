@@ -114,13 +114,20 @@ def stats(dates, eq, a: str, b: str) -> dict:
 
 
 def main() -> int:
+    global FIN_SPREAD
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--price-only", action="store_true", help="use ^GSPC from 1970 (no dividends)")
+    ap.add_argument("--index", default="^GSPC", help="price index for signal+returns with --price-only "
+                                                     "(e.g. ^NDX); default ^GSPC")
+    ap.add_argument("--fin-spread", type=float, default=FIN_SPREAD,
+                    help="financing spread over T-bills; 0.0078 matches real SSO/UPRO 2009-2026")
+    ap.add_argument("--sweep", action="store_true", help="CAGR by leverage 1-4x, with/without filter")
     ap.add_argument("--refresh", action="store_true", help="re-download data")
     args = ap.parse_args()
+    FIN_SPREAD = args.fin_spread
 
-    px = yahoo("^GSPC", args.refresh)                      # signal always on the price index
-    tr = px if args.price_only else yahoo("^SP500TR", args.refresh)
+    px = yahoo(args.index, args.refresh)                   # signal on the price index
+    tr = px if (args.price_only or args.index != "^GSPC") else yahoo("^SP500TR", args.refresh)
     irx = yahoo("^IRX", args.refresh)
     dates = sorted(d for d in tr if d in px)
     rf_last, rf = 0.0, []
@@ -143,6 +150,20 @@ def main() -> int:
     signal = [False] + above[:-1]
     first = SMA_N                                           # start once the SMA exists
     dates, ret, rf, signal = dates[first:], ret[first:], rf[first:], signal[first:]
+
+    if args.sweep:
+        a, b = dates[0], dates[-1]
+        print(f"Leverage sweep {args.index} {a}..{b}, fin spread {FIN_SPREAD:.2%}: "
+              f"CAGR% (maxDD%) per sub-period")
+        heads = [("FULL", a, b)] + PERIODS
+        print(f"{'':<14}" + "".join(f"{p:>18}" for p, _, _ in heads))
+        for f in (False, True):
+            for lev in (1, 1.5, 2, 2.5, 3, 3.5, 4):
+                eq = simulate(dates, ret, rf, signal, lev, f)
+                cells = [stats(dates, eq, pa, pb) for _, pa, pb in heads]
+                print(f"{lev:>4g}x {'sma200' if f else 'hold  '}  " +
+                      "".join(f"{c.get('cagr', 0):>9.1f} ({c.get('mdd', 0):>5.0f})" for c in cells))
+        return 0
 
     variants = {f"{l:g}x{'_sma200' if f else ''}": (l, f) for l in (1, 2, 3) for f in (False, True)}
     curves = {name: simulate(dates, ret, rf, signal, l, f) for name, (l, f) in variants.items()}
