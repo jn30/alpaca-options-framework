@@ -34,7 +34,18 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 # position it doesn't track ("ghost sweep") and cancels all open option orders,
 # which would tear a condor apart. Each entry point refuses to start unless this
 # matches. Override per run without editing the file:  BOT_STRATEGY=directional
-STRATEGY          = os.environ.get("BOT_STRATEGY", "condor").strip().lower()
+#                   "trend"       -> trend_bot.py     (2x S&P 500 above SMA200, else T-bills)
+STRATEGY          = os.environ.get("BOT_STRATEGY", "trend").strip().lower()
+
+# Trend bot (trend_bot.py) — pre-registered in backtest/leveraged_trend.py, do not tune
+TREND_SIGNAL        = "SPY"     # trend measured on this
+TREND_SMA           = 200       # days
+TREND_RISK_ON       = "SSO"     # held while SPY > SMA200 (2x S&P 500)
+TREND_RISK_OFF      = "SGOV"    # held otherwise (0-3 month T-bills)
+TREND_MINUTES_BEFORE_CLOSE = 15 # daily check time
+TREND_CASH_USE      = 0.98      # share of cash put to work (buffer for notional rounding)
+TREND_MIN_TRADE_FRAC = 0.03     # ignore top-ups smaller than this share of equity
+TREND_SUBMIT        = True      # False = log decisions only
 
 # Iron-condor settings (used by condor_paper.py; CLI flags override these)
 CONDOR_ENTRY_TIME   = "13:00"   # ET
