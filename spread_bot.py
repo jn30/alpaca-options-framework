@@ -31,6 +31,7 @@ Spec: docs/superpowers/specs/2026-11-14-spread-bot-design.md
 from __future__ import annotations
 
 import argparse
+import csv
 import datetime as dt
 import json
 import logging
@@ -303,6 +304,148 @@ def enter(trading, plan: dict, qty: int, submit: bool) -> Optional[dict]:
             "mid_credit": plan["mid_credit"], "credit": credit,
             "buyback": rules.buyback_price(credit, config.SPREAD_BUYBACK[name]),
             "tp_order_id": None, "equity_before": equity}
+
+
+# ── Exits ─────────────────────────────────────────────────────────────────────
+
+CSV_FIELDS = ["strategy", "entry_date", "expiry", "qty", "width", "mid_credit", "credit", "buyback",
+              "exit_date", "exit_reason", "exit_debit", "pnl", "equity_before", "equity_after"]
+EXIT_TEXT = {"buyback": "Rückkauf-Ziel erreicht", "expiry_close": "am Verfallstag geschlossen",
+             "expired": "verfallen bzw. vom Broker geschlossen", "gone": "Position nicht mehr im Konto"}
+
+
+def record_exit(pos: dict, reason: str, debit: Optional[float], trading) -> None:
+    """One CSV row + a Discord message for a finished position. `debit` is the
+    price paid to close, None if unknown (closed while the bot was away)."""
+    try:
+        equity_after = float(trading.get_account().equity)
+    except Exception:
+        equity_after = None
+    pnl = None if debit is None else round((pos["credit"] - debit) * 100.0 * pos["qty"], 2)
+    row = {k: pos.get(k, "") for k in CSV_FIELDS}
+    row.update(exit_date=dt.datetime.now(ET).date().isoformat(), exit_reason=reason,
+               exit_debit="" if debit is None else f"{debit:.2f}",
+               pnl="" if pnl is None else f"{pnl:.2f}",
+               equity_after="" if equity_after is None else f"{equity_after:.2f}")
+    os.makedirs(os.path.dirname(CSV_PATH) or ".", exist_ok=True)
+    new = not os.path.exists(CSV_PATH)
+    with open(CSV_PATH, "a", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=CSV_FIELDS)
+        if new:
+            w.writeheader()
+        w.writerow(row)
+    logger.info("%s closed (%s): debit=%s pnl=%s", pos["strategy"], reason, row["exit_debit"], row["pnl"])
+    result = "P&L unbekannt" if pnl is None else f"P&L **{pnl:+.2f} $**"
+    notify(f"📕 **{pos['strategy'].upper()}** {pos['qty']}x beendet — {EXIT_TEXT.get(reason, reason)}. "
+           f"Credit {pos['credit']:.2f}, Rückkauf {row['exit_debit'] or '?'}, {result}")
+
+
+def _halt(state: dict, reason: str, text: str) -> None:
+    if state["halted"] != reason:
+        logger.error("HALT (%s): %s", reason, text)
+        notify(f"🚨 **SPREAD-Bot angehalten ({reason}):** {text} Keine neuen Einstiege, bis du "
+               f"`python spread_bot.py --clear-halt` ausführst.")
+    state["halted"] = reason
+
+
+def reconcile(trading, state: dict, today: dt.date) -> dict:
+    """Bring the state file in line with the account before anything else.
+    - SPY shares in the account (early assignment): halt, touch nothing.
+    - all legs of a position present: keep it.
+    - no leg present: it was closed while we were not looking — record it.
+    - some legs present or wrong size: halt, a human has to look."""
+    held = {p.symbol: float(p.qty) for p in trading.get_all_positions()}
+    if config.UNDERLYING in held:
+        _halt(state, "assignment", f"{held[config.UNDERLYING]:.0f} SPY-Aktien im Konto (vorzeitige "
+                                   f"Ausübung eines Short Puts?). Bitte Konto prüfen.")
+        return state
+    for name in STRATEGIES:
+        pos = state[name]
+        if pos is None:
+            continue
+        want = {leg["symbol"]: (-pos["qty"] if leg["short"] else pos["qty"]) for leg in pos["legs"]}
+        have = {s: held.get(s, 0.0) for s in want}
+        if have == want:
+            continue
+        if any(have.values()):
+            _halt(state, "legs_mismatch", f"{name}: erwartet {want}, im Konto {have}.")
+            continue
+        reason, debit = "buyback", None
+        if pos.get("tp_order_id"):
+            try:
+                order = trading.get_order_by_id(pos["tp_order_id"])
+                if order.status == OrderStatus.FILLED:
+                    debit = abs(float(order.filled_avg_price))
+                else:
+                    reason = "gone"
+            except Exception as exc:
+                logger.warning("%s: buy-back order not readable: %s", name, exc)
+        if debit is None and today > dt.date.fromisoformat(pos["expiry"]):
+            reason = "expired"
+        record_exit(pos, reason, debit, trading)
+        state[name] = None
+    return state
+
+
+def ensure_buyback(trading, pos: dict, submit: bool) -> None:
+    """Keep one closing limit order at the buy-back price working. Option
+    orders are day orders, so this places a fresh one every trading day."""
+    if not submit or pos["buyback"] < 0.01:
+        return
+    if pos.get("tp_order_id"):
+        order = trading.get_order_by_id(pos["tp_order_id"])
+        if order.status == OrderStatus.FILLED or order.status not in TERMINAL:
+            return                      # filled (reconcile books it) or still working
+    order = trading.submit_order(build_order(pos["legs"], pos["qty"], pos["buyback"], opening=False))
+    pos["tp_order_id"] = str(order.id)
+    logger.info("%s: buy-back order at %.2f placed (id=%s)", pos["strategy"], pos["buyback"], order.id)
+
+
+def close_debits(legs: list[dict], quotes: dict[str, tuple[float, float]]) -> tuple[float, float]:
+    """(mid_debit, natural_debit) to buy the position back from {symbol: (bid, ask)}.
+    Natural = pay the ask on the shorts, take the bid on the longs."""
+    mid = nat = 0.0
+    for leg in legs:
+        bid, ask = quotes[leg["symbol"]]
+        if leg["short"]:
+            mid += (bid + ask) / 2.0
+            nat += ask
+        else:
+            mid -= (bid + ask) / 2.0
+            nat -= bid
+    return round(mid, 4), round(nat, 4)
+
+
+def close_position(opt, trading, pos: dict):
+    """Expiry-day exit: cancel the buy-back order, then buy the position back.
+    Pass 1 works up from the mid in 1c steps, pass 2 from the natural debit in
+    5c steps, capped at the wing width (the most it can be worth). Returns the
+    filled Order (possibly the buy-back order itself) or None."""
+    if pos.get("tp_order_id"):
+        try:
+            trading.cancel_order_by_id(pos["tp_order_id"])
+        except Exception as exc:
+            logger.warning("%s: cancel of buy-back order failed (maybe done): %s", pos["strategy"], exc)
+        time.sleep(1)
+        order = trading.get_order_by_id(pos["tp_order_id"])
+        if order.status == OrderStatus.FILLED:
+            return order
+    symbols = {leg["symbol"]: leg["symbol"] for leg in pos["legs"]}
+    width = pos["width"]
+    for attempt, (natural, step, steps, wait) in enumerate([(False, 0.01, 10, 20), (True, 0.05, 12, 10)], 1):
+        try:
+            mid, nat = close_debits(pos["legs"], leg_quotes(opt, symbols, allow_zero_bid=True))
+            start = round(min(max(nat if natural else mid, 0.01), width), 2)
+        except Exception as exc:
+            logger.warning("close quotes failed (%s) — working from width/2", exc)
+            start = round(width / 2, 2)
+        logger.info("%s CLOSE pass %d: start debit %.2f, step %.2f x %d",
+                    pos["strategy"], attempt, start, step, steps)
+        filled = work(trading, pos["legs"], pos["qty"], start, False, steps,
+                      step=step, step_wait=wait, cap=width)
+        if filled is not None:
+            return filled
+    return None
 
 
 # ── Entry point ───────────────────────────────────────────────────────────────

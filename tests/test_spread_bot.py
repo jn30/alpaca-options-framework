@@ -110,3 +110,127 @@ def test_plan_comb_skips_without_deltas(monkeypatch):
     _patch_market(monkeypatch, lambda *a, **k: {})
     monkeypatch.setattr(b, "put_deltas", lambda opt, expiry, spot: {})
     assert b.plan_comb(None, None, None, D(2026, 11, 16)) is None
+
+
+class FakeTrading:
+    def __init__(self, positions=(), orders=None):
+        self._p, self._o = list(positions), dict(orders or {})
+        self.submitted = []
+
+    def get_all_positions(self):
+        return self._p
+
+    def get_order_by_id(self, oid):
+        return self._o[oid]
+
+    def submit_order(self, req):
+        self.submitted.append(req)
+        return O("new-1", b.OrderStatus.NEW)
+
+
+class P:  # position stub
+    def __init__(self, symbol, qty):
+        self.symbol, self.qty = symbol, str(qty)
+
+
+class O:  # order stub
+    def __init__(self, oid, status, price=None):
+        self.id, self.status, self.filled_avg_price = oid, status, price
+
+
+POS = {"strategy": "comb", "entry_date": "2026-11-16", "expiry": "2026-11-27", "legs": LEGS,
+       "qty": 2, "width": 10.0, "mid_credit": 0.52, "credit": 0.50, "buyback": 0.25,
+       "tp_order_id": None, "equity_before": 5000.0}
+TODAY = D(2026, 11, 18)
+
+
+def _state(**pos):
+    return {"nectar": None, "comb": {**POS, **pos}, "skipped": {}, "halted": None}
+
+
+def _exits(monkeypatch):
+    seen = []
+    monkeypatch.setattr(b, "notify", lambda *_: None)
+    monkeypatch.setattr(b, "record_exit",
+                        lambda pos, reason, debit, trading: seen.append((reason, debit)))
+    return seen
+
+
+def test_reconcile_keeps_position_that_is_still_there(monkeypatch):
+    seen = _exits(monkeypatch)
+    t = FakeTrading([P(LEGS[0]["symbol"], -2), P(LEGS[1]["symbol"], 2)])
+    out = b.reconcile(t, _state(), TODAY)
+    assert out["comb"] is not None and out["halted"] is None and seen == []
+
+
+def test_reconcile_marks_vanished_position_as_closed(monkeypatch):
+    seen = _exits(monkeypatch)
+    out = b.reconcile(FakeTrading([]), _state(), TODAY)
+    assert out["comb"] is None and seen == [("buyback", None)]
+
+
+def test_reconcile_takes_debit_from_filled_buyback_order(monkeypatch):
+    seen = _exits(monkeypatch)
+    t = FakeTrading([], {"tp-1": O("tp-1", b.OrderStatus.FILLED, "0.24")})
+    out = b.reconcile(t, _state(tp_order_id="tp-1"), TODAY)
+    assert out["comb"] is None and seen == [("buyback", 0.24)]
+
+
+def test_reconcile_vanished_after_expiry_is_expired(monkeypatch):
+    seen = _exits(monkeypatch)
+    out = b.reconcile(FakeTrading([]), _state(), D(2026, 11, 30))
+    assert out["comb"] is None and seen == [("expired", None)]
+
+
+def test_reconcile_halts_on_spy_shares(monkeypatch):
+    seen = _exits(monkeypatch)
+    out = b.reconcile(FakeTrading([P("SPY", 200)]), _state(), TODAY)
+    assert out["halted"] == "assignment" and out["comb"] is not None and seen == []
+
+
+def test_reconcile_halts_on_partial_legs(monkeypatch):
+    seen = _exits(monkeypatch)
+    out = b.reconcile(FakeTrading([P(LEGS[1]["symbol"], 2)]), _state(), TODAY)   # short leg missing
+    assert out["halted"] == "legs_mismatch" and out["comb"] is not None and seen == []
+
+
+def test_ensure_buyback_places_closing_limit_once():
+    t = FakeTrading()
+    pos = dict(POS)
+    b.ensure_buyback(t, pos, submit=True)
+    assert pos["tp_order_id"] == "new-1" and len(t.submitted) == 1
+    assert t.submitted[0].limit_price == 0.25 and t.submitted[0].legs[0].side.value == "buy"
+    t._o["new-1"] = O("new-1", b.OrderStatus.NEW)
+    b.ensure_buyback(t, pos, submit=True)            # still working -> no second order
+    assert len(t.submitted) == 1
+
+
+def test_ensure_buyback_replaces_expired_day_order():
+    t = FakeTrading([], {"old": O("old", b.OrderStatus.EXPIRED)})
+    pos = {**POS, "tp_order_id": "old"}
+    b.ensure_buyback(t, pos, submit=True)
+    assert pos["tp_order_id"] == "new-1"
+
+
+def test_ensure_buyback_dry_run_sends_nothing():
+    t = FakeTrading()
+    b.ensure_buyback(t, dict(POS), submit=False)
+    assert t.submitted == []
+
+
+def test_record_exit_writes_csv_row_with_pnl(tmp_path, monkeypatch):
+    monkeypatch.setattr(b, "notify", lambda *_: None)
+    monkeypatch.setattr(b, "CSV_PATH", str(tmp_path / "t.csv"))
+    t = FakeTrading()
+    t.get_account = lambda: type("A", (), {"equity": "5050"})()
+    b.record_exit(dict(POS), "buyback", 0.25, t)
+    import csv
+    row = list(csv.DictReader(open(tmp_path / "t.csv", encoding="utf-8")))[0]
+    assert row["strategy"] == "comb" and row["exit_reason"] == "buyback"
+    assert float(row["pnl"]) == 50.0 and float(row["equity_after"]) == 5050.0
+
+
+def test_close_debits_mid_and_natural():
+    q = {"SPY261127P00650000": (0.90, 1.00), "SPY261127P00640000": (0.40, 0.50)}
+    # mid: 0.95 - 0.45 ; natural: pay the short's ask 1.00, get the long's bid 0.40
+    assert b.close_debits(LEGS, q) == (0.50, 0.60)
