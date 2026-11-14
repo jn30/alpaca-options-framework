@@ -97,3 +97,45 @@ def buyback_price(credit: float, frac: float) -> float:
     """Debit at which the position is bought back: `frac` of the credit,
     rounded down to the cent."""
     return math.floor(round(credit * frac * 100.0, 6)) / 100.0
+
+
+# ── Sizing ────────────────────────────────────────────────────────────────────
+
+def _fit(budget: float, loss_per_contract: float) -> int:
+    if budget <= 0 or loss_per_contract <= 0:
+        return 0
+    return int(budget // loss_per_contract)
+
+
+def contracts(budget: float, width: float, credit: float) -> int:
+    """Contracts whose worst-case loss, (width - credit) * 100 each, fits the
+    budget. A credit <= 0 or >= width is a bad quote: 0."""
+    if credit <= 0 or credit >= width:
+        return 0
+    return _fit(budget, (width - credit) * 100.0)
+
+
+def allocate(capital: float, loss: dict[str, float], shares: dict[str, float]) -> dict[str, int]:
+    """Contracts per strategy when both are free to enter. `loss` is the
+    worst-case loss per contract of each strategy that can enter today (a
+    missing key = cannot enter). Each gets its share of the capital; a
+    strategy that cannot afford one contract hands its share to the other.
+    If neither can, Comb and then Nectar gets a try with everything."""
+    qty = {k: _fit(capital * shares[k], loss[k]) if k in loss else 0 for k in shares}
+    funded = [k for k in qty if qty[k] > 0]
+    if len(funded) == len(qty):
+        return qty
+    if funded:
+        qty[funded[0]] = _fit(capital, loss[funded[0]])
+        return qty
+    for k in ("comb", "nectar"):
+        if k in loss and _fit(capital, loss[k]) > 0:
+            qty[k] = _fit(capital, loss[k])
+            break
+    return qty
+
+
+def qty_alongside(capital: float, free_cash: float, share: float, loss_per_contract: float) -> int:
+    """Contracts for a strategy entering while the other one is open: its own
+    share of the capital, but never more than the cash still free."""
+    return _fit(min(capital * share, free_cash), loss_per_contract)

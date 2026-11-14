@@ -57,3 +57,43 @@ def test_buyback_price_floors_to_cent():
 def test_expiry_close_time_normal_and_half_day():
     assert r.expiry_close_time(dt.time(16, 0)) == dt.time(15, 30)
     assert r.expiry_close_time(dt.time(13, 0)) == dt.time(12, 30)
+
+
+SH = {"nectar": 0.07, "comb": 0.93}
+
+
+def test_contracts():
+    assert r.contracts(871, 5, 1.60) == 2
+    assert r.contracts(339, 5, 1.60) == 0
+    assert r.contracts(5000, 5, 0) == 0        # no credit
+    assert r.contracts(5000, 5, 5.2) == 0      # credit >= width
+    assert r.contracts(-10, 5, 1.6) == 0
+
+
+def test_allocate_original_ratio():
+    assert r.allocate(10500, {"nectar": 340, "comb": 950}, SH) == {"nectar": 2, "comb": 10}
+
+
+def test_allocate_spillover_to_other_strategy():
+    assert r.allocate(5000, {"nectar": 340, "comb": 950}, SH) == {"nectar": 1, "comb": 4}
+    assert r.allocate(2000, {"nectar": 340, "comb": 950}, SH) == {"nectar": 0, "comb": 2}
+
+
+def test_allocate_both_zero_tries_comb_then_nectar_with_everything():
+    assert r.allocate(871, {"nectar": 340, "comb": 950}, SH) == {"nectar": 2, "comb": 0}
+    assert r.allocate(1000, {"nectar": 340, "comb": 950}, SH) == {"nectar": 0, "comb": 1}
+
+
+def test_allocate_one_strategy_unavailable():
+    assert r.allocate(871, {"nectar": 340}, SH) == {"nectar": 2, "comb": 0}
+
+
+def test_allocate_never_exceeds_capital():
+    q = r.allocate(5000, {"nectar": 340, "comb": 950}, SH)
+    assert q["nectar"] * 340 + q["comb"] * 950 <= 5000
+
+
+def test_qty_alongside_capped_by_free_cash():
+    assert r.qty_alongside(10000, 500, 0.07, 340) == 1     # share 700 -> 2, free cash allows 1
+    assert r.qty_alongside(10000, 5000, 0.07, 340) == 2
+    assert r.qty_alongside(10000, 100, 0.07, 340) == 0
