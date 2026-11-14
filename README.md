@@ -292,9 +292,15 @@ runs next to the trend bot. **The rules are not backtested** — related tests i
 | Otherwise | closed 30 min before the bell on expiry day | same |
 
 Sizing: the worst-case loss of all open positions, `(wing − credit) × 100` per contract, may use
-the whole cash balance — no margin, no stop-loss. Cash is split 7% Nectar / 93% Comb (the ratio
-of the original fixed sizes); a strategy that cannot afford one contract hands its share to the
-other. One position per strategy at a time.
+the whole cash balance — no margin, no stop-loss. Comb is served first from the whole cash and
+Nectar gets what is left, including everything when Comb cannot afford a contract
+(`SPREAD_PRIORITY`; set it to `None` for the original 7% / 93% split in `SPREAD_SHARES`).
+One position per strategy at a time. `SPREAD_ENABLED` lists the strategies that may open new
+positions; Nectar is switched off there because of the backtest below.
+
+Backtest (`python backtest/spread_strategies.py`, 2024-02 to 2026-10, per contract, 0.03 $ slippage
+per leg): Nectar -11.81 $/trade, negative in all three years; Comb +9.02 $/trade, not significant
+(t 0.75), 2024 negative. Stop-losses made both worse. Both are NO-GO by the pre-registered criteria.
 
 ```bash
 python spread_bot.py                 # loop forever (run_spreads.bat restarts it after a crash)

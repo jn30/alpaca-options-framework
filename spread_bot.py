@@ -14,8 +14,12 @@ Both: no stop-loss; closed 30 minutes before the bell on expiry day if the
 buy-back never filled; one position per strategy at a time.
 
 Sizing: the worst-case loss of all open positions together may use the whole
-cash balance (no margin). Cash is split 7% Nectar / 93% Comb; a strategy that
-cannot afford one contract hands its share to the other (spread_rules.allocate).
+cash balance (no margin). Only the strategies in config.SPREAD_ENABLED open new
+positions (Nectar is switched off since 2026-11-14: it lost in every year of
+the backtest); an open position is managed to its exit either way. Comb is served first from the whole cash, Nectar
+gets what is left — also everything when Comb cannot afford one contract
+(config.SPREAD_PRIORITY). With SPREAD_PRIORITY = None the cash is split by
+SPREAD_SHARES instead (7% Nectar / 93% Comb, the original design).
 
 The rules are NOT backtested. Related tests in this repo (0DTE condor, 30-45 DTE
 put spreads) were negative.
@@ -500,6 +504,21 @@ def capital_and_free(trading, state: dict) -> tuple[float, float]:
     return round(cash - credits, 2), round(min(cash - reserved, float(acct.options_buying_power)), 2)
 
 
+def size(capital: float, free: float, loss: dict[str, float], state: dict) -> dict[str, int]:
+    """Contracts for the strategies entering now (`loss` = worst-case loss per
+    contract of each). With config.SPREAD_PRIORITY the strategies are served in
+    that order from the whole cash; otherwise by config.SPREAD_SHARES."""
+    order = getattr(config, "SPREAD_PRIORITY", None)
+    other_open = any(state[n] is not None for n in STRATEGIES)
+    if order:
+        if other_open:                                   # whatever cash the open position leaves free
+            return {n: rules.qty_alongside(capital, free, 1.0, loss[n]) for n in loss}
+        return rules.allocate_priority(capital, loss, tuple(order))
+    if other_open:
+        return {n: rules.qty_alongside(capital, free, config.SPREAD_SHARES[n], loss[n]) for n in loss}
+    return rules.allocate(capital, loss, config.SPREAD_SHARES)
+
+
 def due_entries(now: dt.datetime, state: dict, days: set[dt.date]) -> list[str]:
     """Strategies that should try to enter right now, Comb first.
     Comb: Mondays. Nectar: Monday, or Tuesday if it has no entry yet this week
@@ -513,7 +532,7 @@ def due_entries(now: dt.datetime, state: dict, days: set[dt.date]) -> list[str]:
     monday = today - dt.timedelta(days=today.weekday())
     out = []
     for name in ("comb", "nectar"):
-        if state[name] is not None:
+        if name not in config.SPREAD_ENABLED or state[name] is not None:
             continue
         if today.weekday() > (0 if name == "comb" else 1):
             continue
@@ -598,11 +617,7 @@ def tick(now: dt.datetime, stock, opt, trading, state: dict, submit: bool) -> di
         return state
 
     capital, free = capital_and_free(trading, state)
-    shares = config.SPREAD_SHARES
-    if any(state[n] is not None for n in STRATEGIES):       # the other strategy is open
-        qty = {n: rules.qty_alongside(capital, free, shares[n], plans[n]["loss"]) for n in ready}
-    else:
-        qty = rules.allocate(capital, {n: plans[n]["loss"] for n in ready}, shares)
+    qty = size(capital, free, {n: plans[n]["loss"] for n in ready}, state)
     logger.info("capital %.2f, free cash %.2f -> contracts %s", capital, free, qty)
 
     for name in ready:
@@ -638,12 +653,16 @@ def preview(stock, opt, trading, state: dict) -> None:
     today = dt.datetime.now(ET).date()
     days = trading_days(trading, today)
     day = today
-    while day not in days or day.weekday() > 1:
+    last_weekday = 1 if "nectar" in config.SPREAD_ENABLED else 0
+    while day not in days or day.weekday() > last_weekday:
         day += dt.timedelta(days=1)
     capital, free = capital_and_free(trading, state)
     print(f"Entry day {day} ({day:%A}) | capital {capital:.2f} $ | free cash {free:.2f} $")
     plans = {}
     for name in (("comb", "nectar") if day.weekday() == 0 else ("nectar",)):
+        if name not in config.SPREAD_ENABLED:
+            print(f"  {name}: switched off (config.SPREAD_ENABLED)")
+            continue
         if state[name] is not None:
             print(f"  {name}: position open ({state[name]['qty']}x, exp {state[name]['expiry']}) — no entry")
             continue
@@ -652,10 +671,7 @@ def preview(stock, opt, trading, state: dict) -> None:
             print(f"  {name}: no entry — {SKIP_REASON.get(name)}")
             continue
         plans[name] = plan
-    if any(state[n] is not None for n in STRATEGIES):
-        qty = {n: rules.qty_alongside(capital, free, config.SPREAD_SHARES[n], p["loss"]) for n, p in plans.items()}
-    else:
-        qty = rules.allocate(capital, {n: p["loss"] for n, p in plans.items()}, config.SPREAD_SHARES)
+    qty = size(capital, free, {n: p["loss"] for n, p in plans.items()}, state)
     for name, p in plans.items():
         q = min(qty.get(name, 0), int(max(free, 0.0) // p["loss"]))
         print(f"  {name}: SPY {p['spot']:.2f}, strikes {p['strikes']}, exp {p['expiry']}, "

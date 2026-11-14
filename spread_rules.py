@@ -135,6 +135,17 @@ def allocate(capital: float, loss: dict[str, float], shares: dict[str, float]) -
     return qty
 
 
+def allocate_priority(capital: float, loss: dict[str, float], order: tuple[str, ...]) -> dict[str, int]:
+    """Contracts per strategy when they are served in `order`: the first takes
+    as many contracts as the whole capital allows, the next sizes from what is
+    left. A strategy missing from `loss` cannot enter today and gets 0."""
+    qty, left = {}, capital
+    for k in order:
+        qty[k] = _fit(left, loss[k]) if k in loss else 0
+        left -= qty[k] * loss.get(k, 0.0)
+    return qty
+
+
 def qty_alongside(capital: float, free_cash: float, share: float, loss_per_contract: float) -> int:
     """Contracts for a strategy entering while the other one is open: its own
     share of the capital, but never more than the cash still free."""

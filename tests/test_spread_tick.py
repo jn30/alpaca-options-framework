@@ -77,6 +77,7 @@ def _tick_env(monkeypatch, cash, plans):
     entered = []
     monkeypatch.setattr(b, "notify", lambda *_: None)
     monkeypatch.setattr(b, "save_state", lambda st: None)
+    monkeypatch.setattr(b.config, "SPREAD_PRIORITY", None, raising=False)   # 7/93 split unless a test sets it
     monkeypatch.setattr(b, "session", lambda trading, day: (dt.time(9, 30), dt.time(16, 0), WEEK))
     monkeypatch.setattr(b, "plan_nectar", lambda *a: plans.get("nectar"))
     monkeypatch.setattr(b, "plan_comb", lambda *a: plans.get("comb"))
@@ -163,3 +164,33 @@ def test_tick_dry_run_enters_nothing_and_does_not_retry_all_day(monkeypatch):
     monkeypatch.setattr(b, "enter", lambda trading, plan, qty, submit: None)
     st = b.tick(at(16, 10, 5), None, None, t, b.empty_state(), False)
     assert st["comb"] is None and st["skipped"] == {"comb": "2026-11-16", "nectar": "2026-11-16"}
+
+
+def test_tick_with_priority_gives_comb_all_cash_and_nectar_the_rest(monkeypatch):
+    t, entered = _tick_env(monkeypatch, 5500, BOTH)
+    monkeypatch.setattr(b.config, "SPREAD_PRIORITY", ("comb", "nectar"))
+    st = b.tick(at(16, 10, 5), None, None, t, b.empty_state(), True)
+    # comb 5500 // 950 = 5 (4750 at risk) ; cash after the fill 5750, 5000 reserved -> 750 free -> nectar 2
+    assert entered == [("comb", 5), ("nectar", 2)]
+
+
+def test_tick_with_priority_falls_back_to_nectar_when_comb_is_unaffordable(monkeypatch):
+    t, entered = _tick_env(monkeypatch, 871, BOTH)
+    monkeypatch.setattr(b.config, "SPREAD_PRIORITY", ("comb", "nectar"))
+    st = b.tick(at(16, 10, 5), None, None, t, b.empty_state(), True)
+    assert entered == [("nectar", 2)] and st["skipped"]["comb"] == "2026-11-16"
+
+
+def test_tick_with_priority_nectar_alongside_open_comb_may_use_all_free_cash(monkeypatch):
+    t, entered = _tick_env(monkeypatch, 11500, {"nectar": BOTH["nectar"]})
+    monkeypatch.setattr(b.config, "SPREAD_PRIORITY", ("comb", "nectar"))
+    monkeypatch.setattr(b, "reconcile", lambda trading, state, today: state)
+    st = {**b.empty_state(), "comb": {**POS, "qty": 10, "credit": 0.50}}    # reserves 10,000
+    b.tick(at(23, 10, 5), None, None, t, st, True)
+    assert entered == [("nectar", 4)]                                        # 1500 free // 340
+
+
+def test_due_entries_skips_a_disabled_strategy(monkeypatch):
+    monkeypatch.setattr(b.config, "SPREAD_ENABLED", ("comb",))
+    assert b.due_entries(at(16, 10, 5), b.empty_state(), WEEK) == ["comb"]
+    assert b.due_entries(at(17, 10, 5), b.empty_state(), WEEK) == []        # Tuesday is Nectar-only

@@ -97,3 +97,13 @@ def test_qty_alongside_capped_by_free_cash():
     assert r.qty_alongside(10000, 500, 0.07, 340) == 1     # share 700 -> 2, free cash allows 1
     assert r.qty_alongside(10000, 5000, 0.07, 340) == 2
     assert r.qty_alongside(10000, 100, 0.07, 340) == 0
+
+
+def test_allocate_priority_gives_the_first_strategy_all_cash_and_the_rest_to_the_next():
+    loss = {"nectar": 340, "comb": 950}
+    order = ("comb", "nectar")
+    assert r.allocate_priority(10500, loss, order) == {"comb": 11, "nectar": 0}      # 50 left
+    assert r.allocate_priority(5500, loss, order) == {"comb": 5, "nectar": 2}        # 750 left
+    assert r.allocate_priority(871, loss, order) == {"comb": 0, "nectar": 2}         # comb unaffordable
+    assert r.allocate_priority(871, {"nectar": 340}, order) == {"comb": 0, "nectar": 2}
+    assert r.allocate_priority(100, loss, order) == {"comb": 0, "nectar": 0}
