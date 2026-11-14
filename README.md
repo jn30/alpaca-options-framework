@@ -275,6 +275,39 @@ There's also a data completeness issue: if an option spikes and reverses within 
 
 ---
 
+## Spread Bot (Nectar + Comb)
+
+`spread_bot.py` trades two fixed SPY rule sets on the paper account and sizes them from the
+account's cash. Set `STRATEGY = "spreads"` in `config.py` (or `BOT_STRATEGY=spreads`); it never
+runs next to the trend bot. **The rules are not backtested** — related tests in this repo
+(0DTE condor, 30-45 DTE put spreads) were negative.
+
+| | Nectar | Comb |
+|---|---|---|
+| Structure | iron condor | put credit spread |
+| Entry | Monday 10:00 ET, else Tuesday | Monday 10:00–15:00 ET |
+| Strikes | short put $2.50 under SPY, $5 wing; short call 3% over SPY, $3 wing | short put nearest 15 delta, long put $10 below |
+| Expiry | Thursday (Friday for a Tuesday entry) | next Friday at least 7 days out |
+| Buy-back | at 75% of the credit | at 50% of the credit |
+| Otherwise | closed 30 min before the bell on expiry day | same |
+
+Sizing: the worst-case loss of all open positions, `(wing − credit) × 100` per contract, may use
+the whole cash balance — no margin, no stop-loss. Cash is split 7% Nectar / 93% Comb (the ratio
+of the original fixed sizes); a strategy that cannot afford one contract hands its share to the
+other. One position per strategy at a time.
+
+```bash
+python spread_bot.py                 # loop forever (run_spreads.bat restarts it after a crash)
+python spread_bot.py --now           # dry-run: what it would trade at the next entry day
+python spread_bot.py --now --submit  # one real pass right now (paper orders)
+python spread_bot.py --status        # state file, cash, positions
+python spread_bot.py --clear-halt    # resume entries after an assignment / leg mismatch halt
+python -m pytest tests               # rule and loop tests, no network
+```
+
+Rules live in `spread_rules.py` (pure functions), settings in the `SPREAD_*` block of
+`config.py`, trades in `logs/spread_trades.csv`, state in `logs/spread_state.json`.
+
 ## Requirements
 
 - Python 3.9+

@@ -9,8 +9,8 @@ WEEK = {D(2026, 11, 16), D(2026, 11, 17), D(2026, 11, 18), D(2026, 11, 19), D(20
 
 def test_state_roundtrip(tmp_path, monkeypatch):
     monkeypatch.setattr(b, "STATE_PATH", str(tmp_path / "s.json"))
-    assert b.load_state() == {"nectar": None, "comb": None, "skipped": {}, "halted": None}
     st = b.load_state()
+    assert st["nectar"] is None and st["comb"] is None and st["skipped"] == {} and st["halted"] is None
     st["halted"] = "assignment"
     b.save_state(st)
     assert b.load_state()["halted"] == "assignment"
@@ -145,7 +145,7 @@ TODAY = D(2026, 11, 18)
 
 
 def _state(**pos):
-    return {"nectar": None, "comb": {**POS, **pos}, "skipped": {}, "halted": None}
+    return {**b.empty_state(), "comb": {**POS, **pos}}
 
 
 def _exits(monkeypatch):

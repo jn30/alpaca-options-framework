@@ -75,7 +75,11 @@ STRATEGIES = ("nectar", "comb")
 # ── State ─────────────────────────────────────────────────────────────────────
 
 def empty_state() -> dict:
-    return {"nectar": None, "comb": None, "skipped": {}, "halted": None}
+    """nectar/comb: the open position or None. skipped: {strategy: date it gave
+    up for the day}. entered: {strategy: date of its last entry}. next_try:
+    {strategy: time before which it does not retry}. halted: reason or None."""
+    return {"nectar": None, "comb": None, "skipped": {}, "halted": None,
+            "entered": {}, "next_try": {}, "warned": {}}
 
 
 def load_state() -> dict:
@@ -350,22 +354,27 @@ def _halt(state: dict, reason: str, text: str) -> None:
 
 def reconcile(trading, state: dict, today: dt.date) -> dict:
     """Bring the state file in line with the account before anything else.
-    - SPY shares in the account (early assignment): halt, touch nothing.
     - all legs of a position present: keep it.
+    - SPY shares in the account (early assignment): halt; a position whose
+      legs are not intact is marked "stuck" and left for a human.
     - no leg present: it was closed while we were not looking — record it.
-    - some legs present or wrong size: halt, a human has to look."""
+    - some legs present or wrong size: halt, mark it stuck.
+    A stuck position gets no automatic orders; intact ones keep their exits."""
     held = {p.symbol: float(p.qty) for p in trading.get_all_positions()}
-    if config.UNDERLYING in held:
+    assigned = config.UNDERLYING in held
+    if assigned:
         _halt(state, "assignment", f"{held[config.UNDERLYING]:.0f} SPY-Aktien im Konto (vorzeitige "
                                    f"Ausübung eines Short Puts?). Bitte Konto prüfen.")
-        return state
     for name in STRATEGIES:
         pos = state[name]
         if pos is None:
             continue
         want = {leg["symbol"]: (-pos["qty"] if leg["short"] else pos["qty"]) for leg in pos["legs"]}
         have = {s: held.get(s, 0.0) for s in want}
-        if have == want:
+        pos["stuck"] = have != want
+        if not pos["stuck"]:
+            continue
+        if assigned:
             continue
         if any(have.values()):
             _halt(state, "legs_mismatch", f"{name}: erwartet {want}, im Konto {have}.")
@@ -448,6 +457,203 @@ def close_position(opt, trading, pos: dict):
     return None
 
 
+# ── Daily loop ────────────────────────────────────────────────────────────────
+
+RETRY = dt.timedelta(minutes=15)      # wait this long after bad quotes / no fill
+
+
+def _hhmm(text: str) -> dt.time:
+    return dt.time(int(text[:2]), int(text[3:5]))
+
+
+def session(trading, day: dt.date):
+    """(open time, close time, trading days around `day`) in ET, or None if
+    the market is closed on `day`."""
+    cal = trading.get_calendar(GetCalendarRequest(start=day - dt.timedelta(days=7),
+                                                  end=day + dt.timedelta(days=21)))
+    for c in cal:
+        if c.date == day:
+            return c.open.time(), c.close.time(), {x.date for x in cal}
+    return None
+
+
+def capital_and_free(trading, state: dict) -> tuple[float, float]:
+    """(capital, free cash). Capital = cash without the credits of the open
+    positions (the base the 7/93 split is taken from). Free = cash not already
+    reserved as collateral (full wing width) of open positions, and never more
+    than Alpaca's options buying power. Margin and securities do not count."""
+    acct = trading.get_account()
+    cash = float(acct.cash)
+    open_pos = [state[n] for n in STRATEGIES if state[n] is not None]
+    credits = sum(p["credit"] * 100.0 * p["qty"] for p in open_pos)
+    reserved = sum(p["width"] * 100.0 * p["qty"] for p in open_pos)
+    return round(cash - credits, 2), round(min(cash - reserved, float(acct.options_buying_power)), 2)
+
+
+def due_entries(now: dt.datetime, state: dict, days: set[dt.date]) -> list[str]:
+    """Strategies that should try to enter right now, Comb first.
+    Comb: Mondays. Nectar: Monday, or Tuesday if it has no entry yet this week
+    (Monday was a holiday, had no fill or no budget). One entry per strategy
+    and week; never while its position is open."""
+    today = now.date()
+    if state["halted"] or today not in days:
+        return []
+    if not (_hhmm(config.SPREAD_ENTRY_TIME) <= now.time() < _hhmm(config.SPREAD_ENTRY_END)):
+        return []
+    monday = today - dt.timedelta(days=today.weekday())
+    out = []
+    for name in ("comb", "nectar"):
+        if state[name] is not None:
+            continue
+        if today.weekday() > (0 if name == "comb" else 1):
+            continue
+        last = state["entered"].get(name)
+        if last and dt.date.fromisoformat(last) >= monday:
+            continue
+        if state["skipped"].get(name) == today.isoformat():
+            continue
+        retry = state["next_try"].get(name)
+        if retry and now < dt.datetime.fromisoformat(retry):
+            continue
+        out.append(name)
+    return out
+
+
+def _give_up(state: dict, name: str, today: dt.date, text: str) -> None:
+    state["skipped"][name] = today.isoformat()
+    logger.info("%s: skipped today — %s", name, text)
+    notify(f"⏭️ **{name.upper()}** setzt heute aus: {text}")
+
+
+def _postpone(state: dict, name: str, now: dt.datetime, text: str) -> None:
+    state["next_try"][name] = (now + RETRY).isoformat()
+    logger.info("%s: retry in %s — %s", name, RETRY, text)
+    if state["warned"].get(name) != now.date().isoformat():
+        state["warned"][name] = now.date().isoformat()
+        notify(f"⏳ **{name.upper()}** noch nicht eingestiegen ({text}). Neuer Versuch alle 15 Minuten "
+               f"bis {config.SPREAD_ENTRY_END} ET.")
+
+
+def tick(now: dt.datetime, stock, opt, trading, state: dict, submit: bool) -> dict:
+    """One pass: reconcile, manage exits, then entries. Returns the new state."""
+    today = now.date()
+    ses = session(trading, today)
+    if ses is None:
+        return state
+    open_t, close_t, days = ses
+    if not (open_t <= now.time() < close_t):
+        return state
+    state = reconcile(trading, state, today)
+
+    # 1. Exits: buy-back order every day, forced close on expiry day.
+    for name in STRATEGIES:
+        pos = state[name]
+        if pos is None or pos.get("stuck"):
+            continue
+        expiring = today >= dt.date.fromisoformat(pos["expiry"])
+        if expiring and now.time() >= rules.expiry_close_time(close_t):
+            if not submit:
+                logger.info("%s: dry-run, would close the expiring position now", name)
+                continue
+            order = close_position(opt, trading, pos)
+            if order is None:
+                notify(f"🚨 **{name.upper()}** ließ sich am Verfallstag nicht schließen — neuer Versuch läuft. "
+                       f"Bitte Konto prüfen, sonst droht Ausübung (SPY wird physisch geliefert)!")
+                continue
+            reason = "buyback" if str(order.id) == pos.get("tp_order_id") else "expiry_close"
+            record_exit(pos, reason, abs(float(order.filled_avg_price)), trading)
+            state[name] = None
+            save_state(state)
+        else:
+            ensure_buyback(trading, pos, submit)
+
+    # 2. Entries.
+    due = due_entries(now, state, days)
+    if not due:
+        return state
+    end = dt.datetime.combine(today, _hhmm(config.SPREAD_ENTRY_END), tzinfo=now.tzinfo)
+    last_chance = now + RETRY >= end
+    plans = {n: (plan_comb if n == "comb" else plan_nectar)(stock, opt, trading, today) for n in due}
+    missing = [n for n in due if plans[n] is None]
+    if missing and not last_chance:
+        # Both wait, so that a strategy with bad quotes right now does not lose its share.
+        for n in due:
+            _postpone(state, n, now, SKIP_REASON.get(n, "keine Kurse") if n in missing
+                      else f"wartet auf {', '.join(missing)}")
+        return state
+    for n in missing:
+        _give_up(state, n, today, SKIP_REASON.get(n, "keine brauchbaren Kurse"))
+    ready = [n for n in due if plans[n] is not None]
+    if not ready:
+        return state
+
+    capital, free = capital_and_free(trading, state)
+    shares = config.SPREAD_SHARES
+    if any(state[n] is not None for n in STRATEGIES):       # the other strategy is open
+        qty = {n: rules.qty_alongside(capital, free, shares[n], plans[n]["loss"]) for n in ready}
+    else:
+        qty = rules.allocate(capital, {n: plans[n]["loss"] for n in ready}, shares)
+    logger.info("capital %.2f, free cash %.2f -> contracts %s", capital, free, qty)
+
+    for name in ready:
+        plan = plans[name]
+        _, free = capital_and_free(trading, state)           # cash may have moved with the last fill
+        q = min(qty.get(name, 0), int(max(free, 0.0) // plan["loss"]))
+        if q <= 0:
+            _give_up(state, name, today, f"Budget reicht nicht für einen Kontrakt (Maximalverlust "
+                                         f"{plan['loss']:.0f} $ pro Kontrakt, frei {free:.0f} $).")
+            continue
+        pos = enter(trading, plan, q, submit)
+        if pos is None:
+            if not submit:
+                state["skipped"][name] = today.isoformat()   # dry-run: plan once, not every 30 s
+            elif last_chance:
+                _give_up(state, name, today, SKIP_REASON.get(name, "kein Fill"))
+            else:
+                _postpone(state, name, now, SKIP_REASON.get(name, "kein Fill"))
+            continue
+        state[name] = pos
+        state["entered"][name] = today.isoformat()
+        save_state(state)
+        notify(f"📗 **{name.upper()}** eröffnet: {q}x, Verfall {pos['expiry']}, Credit {pos['credit']:.2f} "
+               f"(Mid {pos['mid_credit']:.2f}), Rückkauf bei {pos['buyback']:.2f}, "
+               f"Maximalverlust {(pos['width'] - pos['credit']) * 100 * q:.0f} $")
+        ensure_buyback(trading, pos, submit)
+    return state
+
+
+def preview(stock, opt, trading, state: dict) -> None:
+    """Dry-run for --now: what the bot would trade at the next entry day, with
+    today's quotes and cash. Sends nothing and changes no state."""
+    today = dt.datetime.now(ET).date()
+    days = trading_days(trading, today)
+    day = today
+    while day not in days or day.weekday() > 1:
+        day += dt.timedelta(days=1)
+    capital, free = capital_and_free(trading, state)
+    print(f"Entry day {day} ({day:%A}) | capital {capital:.2f} $ | free cash {free:.2f} $")
+    plans = {}
+    for name in (("comb", "nectar") if day.weekday() == 0 else ("nectar",)):
+        if state[name] is not None:
+            print(f"  {name}: position open ({state[name]['qty']}x, exp {state[name]['expiry']}) — no entry")
+            continue
+        plan = (plan_comb if name == "comb" else plan_nectar)(stock, opt, trading, day)
+        if plan is None:
+            print(f"  {name}: no entry — {SKIP_REASON.get(name)}")
+            continue
+        plans[name] = plan
+    if any(state[n] is not None for n in STRATEGIES):
+        qty = {n: rules.qty_alongside(capital, free, config.SPREAD_SHARES[n], p["loss"]) for n, p in plans.items()}
+    else:
+        qty = rules.allocate(capital, {n: p["loss"] for n, p in plans.items()}, config.SPREAD_SHARES)
+    for name, p in plans.items():
+        q = min(qty.get(name, 0), int(max(free, 0.0) // p["loss"]))
+        print(f"  {name}: SPY {p['spot']:.2f}, strikes {p['strikes']}, exp {p['expiry']}, "
+              f"mid credit {p['mid_credit']:.2f} (natural {p['natural_credit']:.2f}), "
+              f"max loss/contract {p['loss']:.0f} $ -> {q} contract(s)")
+    print("Dry-run: no order sent.")
+
+
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def build_parser() -> argparse.ArgumentParser:
@@ -475,10 +681,42 @@ def main() -> int:
         st["halted"] = None
         save_state(st)
         return 0
+    stock = StockHistoricalDataClient(config.ALPACA_API_KEY, config.ALPACA_API_SECRET)
+    opt = OptionHistoricalDataClient(config.ALPACA_API_KEY, config.ALPACA_API_SECRET)
+    trading = TradingClient(config.ALPACA_API_KEY, config.ALPACA_API_SECRET, paper=True)
     if args.status:
+        acct = trading.get_account()
         print(json.dumps(load_state(), indent=1))
+        print(f"cash {float(acct.cash):.2f} | equity {float(acct.equity):.2f} | "
+              f"options buying power {float(acct.options_buying_power):.2f}")
+        for p in trading.get_all_positions():
+            print(f"  {p.symbol}: {p.qty}")
         return 0
-    return 0
+    if args.now:
+        if not args.submit:
+            preview(stock, opt, trading, load_state())
+            return 0
+        save_state(tick(dt.datetime.now(ET), stock, opt, trading, load_state(), True))
+        return 0
+
+    if not take_lock():
+        print(f"Another bot is already running (port {LOCK_PORT} taken) — not starting a second one.",
+              file=sys.stderr)
+        return 2
+    submit = bool(config.SPREAD_SUBMIT)
+    logger.info("Spread bot loop: Nectar + Comb on %s, entry %s-%s ET%s.", config.UNDERLYING,
+                config.SPREAD_ENTRY_TIME, config.SPREAD_ENTRY_END, "" if submit else " (DRY)")
+    last_alarm = None
+    while True:
+        try:
+            save_state(tick(dt.datetime.now(ET), stock, opt, trading, load_state(), submit))
+        except Exception as exc:
+            logger.exception("tick failed")
+            if last_alarm is None or time.time() - last_alarm > 1800:     # at most one alarm per 30 min
+                notify(f"🚨 **SPREAD-Bot Fehler:** `{type(exc).__name__}: {str(exc)[:300]}`")
+                last_alarm = time.time()
+            time.sleep(120)
+        time.sleep(30)
 
 
 if __name__ == "__main__":
