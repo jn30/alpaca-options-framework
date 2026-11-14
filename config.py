@@ -36,7 +36,7 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 # matches. Override per run without editing the file:  BOT_STRATEGY=directional
 #                   "trend"       -> trend_bot.py     (2x S&P 500 above SMA200, else T-bills)
 #                   "spreads"     -> spread_bot.py    (Nectar condor + Comb put spread, sized from cash)
-STRATEGY          = os.environ.get("BOT_STRATEGY", "trend").strip().lower()
+STRATEGY          = os.environ.get("BOT_STRATEGY", "spreads").strip().lower()
 
 # Trend bot (trend_bot.py) — pre-registered in backtest/leveraged_trend.py, do not tune
 TREND_SIGNAL        = "SPY"     # trend measured on this

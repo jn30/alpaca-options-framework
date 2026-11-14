@@ -10,6 +10,8 @@ if /i "%STRAT%"=="directional" (
     call "%~dp0run_bot.bat"
 ) else if /i "%STRAT%"=="trend" (
     call "%~dp0run_trend.bat"
+) else if /i "%STRAT%"=="spreads" (
+    call "%~dp0run_spreads.bat"
 ) else if /i "%STRAT%"=="condor" (
     echo Condor mode: %MODE%  ^(CONDOR_SUBMIT in config.py^)
     call "%~dp0run_condor.bat"
