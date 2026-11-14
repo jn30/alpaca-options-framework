@@ -35,6 +35,7 @@ DISCORD_WEBHOOK_URL = os.environ.get("DISCORD_WEBHOOK_URL", "")
 # which would tear a condor apart. Each entry point refuses to start unless this
 # matches. Override per run without editing the file:  BOT_STRATEGY=directional
 #                   "trend"       -> trend_bot.py     (2x S&P 500 above SMA200, else T-bills)
+#                   "spreads"     -> spread_bot.py    (Nectar condor + Comb put spread, sized from cash)
 STRATEGY          = os.environ.get("BOT_STRATEGY", "trend").strip().lower()
 
 # Trend bot (trend_bot.py) — pre-registered in backtest/leveraged_trend.py, do not tune
@@ -72,6 +73,21 @@ CONDOR_MIN_CREDIT   = 0.25      # skip the session if mid credit is below this
 CONDOR_MAX_CREDIT_FRAC = 0.60  # sanity: skip if mid credit exceeds this share of the width (bad quotes)
 CONDOR_LOOP         = True      # keep the process running: one condor per trading day, no daily restart
 CONDOR_SUBMIT       = True      # False = dry-run (prints the order); True = send real PAPER orders
+
+# Spread bot (spread_bot.py): Nectar (iron condor) + Comb (15-delta put credit spread) on SPY.
+# The rules themselves live in spread_rules.py and are NOT backtested.
+# Sizing: all open positions together may put the whole cash balance at risk (no margin).
+SPREAD_SHARES        = {"nectar": 0.07, "comb": 0.93}   # split of the cash, ratio of the original fixed sizes
+                                                        # (2 condors ~ $700 risk : 10 spreads ~ $9,500 risk);
+                                                        # a strategy that can't afford 1 contract hands its share over
+SPREAD_ENTRY_TIME    = "10:00"   # ET
+SPREAD_ENTRY_END     = "15:00"   # ET, no new entry after this
+SPREAD_BUYBACK       = {"nectar": 0.75, "comb": 0.50}   # buy back at this share of the credit
+SPREAD_COMB_DELTA    = -0.15
+SPREAD_COMB_WIDTH    = 10.0
+SPREAD_MAX_CONCEDE   = 3         # cents conceded from mid while working an entry
+SPREAD_MAX_CREDIT_FRAC = 0.60    # skip if mid credit exceeds this share of the width (bad quotes)
+SPREAD_SUBMIT        = True      # False = log decisions only
 
 # ── Universe ───────────────────────────────────────────────────────────────────
 UNDERLYING        = "SPY"
