@@ -212,6 +212,19 @@ def test_ensure_buyback_replaces_expired_day_order():
     assert pos["tp_order_id"] == "new-1"
 
 
+def test_ensure_buyback_does_not_resend_a_rejected_order_the_same_day(monkeypatch):
+    monkeypatch.setattr(b, "notify", lambda *_: None)
+    t = FakeTrading()
+    pos = dict(POS)
+    b.ensure_buyback(t, pos, submit=True, today=TODAY)
+    t._o["new-1"] = O("new-1", b.OrderStatus.REJECTED)
+    b.ensure_buyback(t, pos, submit=True, today=TODAY)
+    b.ensure_buyback(t, pos, submit=True, today=TODAY)
+    assert len(t.submitted) == 1
+    b.ensure_buyback(t, pos, submit=True, today=TODAY + dt.timedelta(days=1))   # next day: fresh order
+    assert len(t.submitted) == 2
+
+
 def test_ensure_buyback_dry_run_sends_nothing():
     t = FakeTrading()
     b.ensure_buyback(t, dict(POS), submit=False)

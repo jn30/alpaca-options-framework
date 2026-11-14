@@ -396,16 +396,26 @@ def reconcile(trading, state: dict, today: dt.date) -> dict:
     return state
 
 
-def ensure_buyback(trading, pos: dict, submit: bool) -> None:
+def ensure_buyback(trading, pos: dict, submit: bool, today: Optional[dt.date] = None) -> None:
     """Keep one closing limit order at the buy-back price working. Option
-    orders are day orders, so this places a fresh one every trading day."""
+    orders are day orders, so this places a fresh one every trading day — but
+    only one per day: an order the broker rejected is not re-sent every tick."""
     if not submit or pos["buyback"] < 0.01:
         return
+    today = today or dt.datetime.now(ET).date()
     if pos.get("tp_order_id"):
         order = trading.get_order_by_id(pos["tp_order_id"])
         if order.status == OrderStatus.FILLED or order.status not in TERMINAL:
             return                      # filled (reconcile books it) or still working
+        if pos.get("tp_date") == today.isoformat():
+            if not pos.get("tp_warned"):
+                pos["tp_warned"] = True
+                logger.error("%s: buy-back order %s ended as %s", pos["strategy"], order.id, order.status)
+                notify(f"⚠️ **{pos['strategy'].upper()}**: Rückkauf-Order wurde vom Broker beendet "
+                       f"({order.status}). Heute kein neuer Versuch, morgen wieder.")
+            return
     order = trading.submit_order(build_order(pos["legs"], pos["qty"], pos["buyback"], opening=False))
+    pos["tp_date"], pos["tp_warned"] = today.isoformat(), False
     pos["tp_order_id"] = str(order.id)
     logger.info("%s: buy-back order at %.2f placed (id=%s)", pos["strategy"], pos["buyback"], order.id)
 
@@ -565,7 +575,7 @@ def tick(now: dt.datetime, stock, opt, trading, state: dict, submit: bool) -> di
             state[name] = None
             save_state(state)
         else:
-            ensure_buyback(trading, pos, submit)
+            ensure_buyback(trading, pos, submit, today)
 
     # 2. Entries.
     due = due_entries(now, state, days)
@@ -618,7 +628,7 @@ def tick(now: dt.datetime, stock, opt, trading, state: dict, submit: bool) -> di
         notify(f"📗 **{name.upper()}** eröffnet: {q}x, Verfall {pos['expiry']}, Credit {pos['credit']:.2f} "
                f"(Mid {pos['mid_credit']:.2f}), Rückkauf bei {pos['buyback']:.2f}, "
                f"Maximalverlust {(pos['width'] - pos['credit']) * 100 * q:.0f} $")
-        ensure_buyback(trading, pos, submit)
+        ensure_buyback(trading, pos, submit, today)
     return state
 
 
