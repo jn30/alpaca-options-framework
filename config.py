@@ -80,10 +80,10 @@ CONDOR_SUBMIT       = True      # False = dry-run (prints the order); True = sen
 SPREAD_SHARES        = {"nectar": 0.07, "comb": 0.93}   # split of the cash, ratio of the original fixed sizes
                                                         # (2 condors ~ $700 risk : 10 spreads ~ $9,500 risk);
                                                         # a strategy that can't afford 1 contract hands its share over
-SPREAD_ENABLED       = ("comb",)   # strategies that may open NEW positions. Nectar is off (user decision
-                                   # 2026-11-14): backtest/spread_strategies.py has it negative in 2024, 2025
-                                   # and 2026. Add "nectar" to switch it back on. Comb needs ~920 $ cash for
-                                   # one contract; below that the bot waits.
+SPREAD_ENABLED       = ("comb", "nectar")   # strategies that may open NEW positions. User decision 2026-11-14:
+                                            # both stay on, Nectar only with what Comb leaves (SPREAD_PRIORITY).
+                                            # Backtest: Nectar negative in 2024, 2025 and 2026; drop "nectar" to
+                                            # switch it off.
 SPREAD_PRIORITY      = ("comb", "nectar")   # served in this order from the WHOLE cash: Comb takes what it can,
                                             # Nectar only what is left (also when Comb cannot afford a contract).
                                             # User decision 2026-11-14 after the backtest (Nectar negative in every

@@ -15,8 +15,7 @@ buy-back never filled; one position per strategy at a time.
 
 Sizing: the worst-case loss of all open positions together may use the whole
 cash balance (no margin). Only the strategies in config.SPREAD_ENABLED open new
-positions (Nectar is switched off since 2026-11-14: it lost in every year of
-the backtest); an open position is managed to its exit either way. Comb is served first from the whole cash, Nectar
+positions; an open position is managed to its exit either way. Comb is served first from the whole cash, Nectar
 gets what is left — also everything when Comb cannot afford one contract
 (config.SPREAD_PRIORITY). With SPREAD_PRIORITY = None the cash is split by
 SPREAD_SHARES instead (7% Nectar / 93% Comb, the original design).

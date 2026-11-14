@@ -296,7 +296,7 @@ the whole cash balance — no margin, no stop-loss. Comb is served first from th
 Nectar gets what is left, including everything when Comb cannot afford a contract
 (`SPREAD_PRIORITY`; set it to `None` for the original 7% / 93% split in `SPREAD_SHARES`).
 One position per strategy at a time. `SPREAD_ENABLED` lists the strategies that may open new
-positions; Nectar is switched off there because of the backtest below.
+positions.
 
 Backtest (`python backtest/spread_strategies.py`, 2024-02 to 2026-10, per contract, 0.03 $ slippage
 per leg): Nectar -11.81 $/trade, negative in all three years; Comb +9.02 $/trade, not significant
