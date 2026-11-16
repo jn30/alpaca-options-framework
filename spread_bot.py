@@ -346,6 +346,17 @@ EXIT_TEXT = {"buyback": "Rückkauf-Ziel erreicht", "expiry_close": "am Verfallst
              "expired": "verfallen bzw. vom Broker geschlossen", "gone": "Position nicht mehr im Konto"}
 
 
+def legs_text(legs: list[dict], qty: int) -> str:
+    """'-2× 742P / +2× 737P / ... (Verfall 19.11.)' from OCC symbols (root + YYMMDD + C/P + strike*1000)."""
+    parts = []
+    for leg in legs:
+        sym = leg["symbol"]
+        strike = int(sym[-8:]) / 1000.0
+        parts.append(f"{'-' if leg['short'] else '+'}{qty}× {strike:g}{sym[-9]}")
+    exp = dt.datetime.strptime(legs[0]["symbol"][-15:-9], "%y%m%d").date()
+    return " / ".join(parts) + f" (Verfall {exp:%d.%m.})"
+
+
 def record_exit(pos: dict, reason: str, debit: Optional[float], trading) -> None:
     """One CSV row + a Discord message for a finished position. `debit` is the
     price paid to close, None if unknown (closed while the bot was away)."""
@@ -369,7 +380,8 @@ def record_exit(pos: dict, reason: str, debit: Optional[float], trading) -> None
     logger.info("%s closed (%s): debit=%s pnl=%s", pos["strategy"], reason, row["exit_debit"], row["pnl"])
     result = "P&L unbekannt" if pnl is None else f"P&L **{pnl:+.2f} $**"
     notify(f"📕 **{pos['strategy'].upper()}** {pos['qty']}x beendet — {EXIT_TEXT.get(reason, reason)}. "
-           f"Credit {pos['credit']:.2f}, Rückkauf {row['exit_debit'] or '?'}, {result}")
+           f"Credit {pos['credit']:.2f}, Rückkauf {row['exit_debit'] or '?'}, {result}\n"
+           f"Legs: {legs_text(pos['legs'], pos['qty'])}")
 
 
 def _halt(state: dict, reason: str, text: str) -> None:
@@ -666,7 +678,8 @@ def tick(now: dt.datetime, stock, opt, trading, state: dict, submit: bool) -> di
         save_state(state)
         notify(f"📗 **{name.upper()}** eröffnet: {q}x, Verfall {pos['expiry']}, Credit {pos['credit']:.2f} "
                f"(Mid {pos['mid_credit']:.2f}), Ziel {pos['buyback']:.2f}, "
-               f"Maximalverlust {(pos['width'] - pos['credit']) * 100 * q:.0f} $")
+               f"Maximalverlust {(pos['width'] - pos['credit']) * 100 * q:.0f} $\n"
+               f"Legs: {legs_text(pos['legs'], q)}")
     return state
 
 

@@ -256,3 +256,20 @@ def test_orders_pass_on_the_paper_client():
     sent = []
     client.submit_order = lambda req: sent.append(req) or "ok"
     assert b.submit(client, b.build_order(LEGS, 1, 0.50, opening=True)) == "ok" and len(sent) == 1
+
+
+def test_legs_text_lists_every_leg_with_side_strike_and_right():
+    legs = [{"symbol": "SPY261119P00742000", "short": True}, {"symbol": "SPY261119P00737000", "short": False},
+            {"symbol": "SPY261119C00767000", "short": True}, {"symbol": "SPY261119C00770000", "short": False}]
+    assert b.legs_text(legs, 2) == "-2× 742P / +2× 737P / -2× 767C / +2× 770C (Verfall 19.11.)"
+    assert b.legs_text([{"symbol": "SPY261120P00732500", "short": True}], 10) == "-10× 732.5P (Verfall 20.11.)"
+
+
+def test_exit_message_shows_the_legs(tmp_path, monkeypatch):
+    sent = []
+    monkeypatch.setattr(b, "notify", sent.append)
+    monkeypatch.setattr(b, "CSV_PATH", str(tmp_path / "t.csv"))
+    t = FakeTrading()
+    t.get_account = lambda: type("A", (), {"equity": "5050"})()
+    b.record_exit(dict(POS), "buyback", 0.25, t)
+    assert "-2× 650P / +2× 640P" in sent[0]

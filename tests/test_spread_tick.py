@@ -102,8 +102,7 @@ def _env(monkeypatch, cash, plans=PLANS, marks=None, fill=None):
             return None
         t.acct.cash = str(float(t.acct.cash) + plan["limit"] * 100 * qty)
         return {**POS, "strategy": plan["strategy"], "qty": qty, "width": plan["width"],
-                "credit": plan["limit"], "entry_date": "2026-11-16",
-                "legs": [{"symbol": plan["strategy"], "short": True}]}
+                "credit": plan["limit"], "entry_date": "2026-11-16", "legs": LEGS}
     monkeypatch.setattr(b, "enter", fake_enter)
     return t, log
 
