@@ -1,35 +1,34 @@
 #!/usr/bin/env python3
 """
-Spread bot: trades two SPY rule sets on the Alpaca PAPER account and sizes
-them from the account's cash.
+Spread bot: trades two SPY books on the Alpaca PAPER account.
 
-    Nectar  iron condor. Monday (else Tuesday). Short put $2.50 under SPY with a
-            $5 wing, short call 3% over SPY with a $3 wing. Expires Thursday
-            (Friday for a Tuesday entry). Bought back at 75% of the credit.
-    Comb    put credit spread. Monday. Short put nearest 15 delta, long put $10
-            below, expiring the next Friday at least 7 days out. Bought back at
-            50% of the credit.
+    Nectar  (~5,000 $ book) one iron condor. Monday or Tuesday. Short put
+            round(SPY - 2.50) with a $5 wing, short call round(SPY x 1.03) with a
+            $3 wing, expiry 3 calendar days out (next listed session through
+            Friday, never over the weekend). Size: (5 - credit) x 100 x qty
+            inside 1,000 $ and inside the cash, max 10. Take at 75% of the credit.
+    Comb    (~25,000 $ book) one bull put spread. Monday 10:00-15:00 ET. Short
+            put = listed strike nearest 15 delta at 18% implied vol, long put
+            $10 below, expiry the Friday nearest 7 days (3-11 days). 10
+            contracts when (10 - credit) x 100 x 10 fits the cash and is at most
+            40% of the book. Take at 50% of the credit.
 
-Both: no stop-loss; closed 30 minutes before the bell on expiry day if the
-buy-back never filled; one position per strategy at a time.
+Both: checked once a minute while the US cash session is open. One position
+per book. Every open and close is one multi-leg limit order: open at 90% of
+the mid credit, close paying at most 15% over the mid debit; no fill -> cancel
+and try again next minute. No roll, no stop-loss; held to expiry day if the
+take never comes, then closed 30 minutes before the bell. A book that is down
+100 $ or more on the day opens nothing new until the next session; its closes
+still go out. Every order is refused unless the client points at PAPER_HOST.
 
-Sizing: the worst-case loss of all open positions together may use the whole
-cash balance (no margin). Only the strategies in config.SPREAD_ENABLED open new
-positions; an open position is managed to its exit either way. Comb is served first from the whole cash, Nectar
-gets what is left — also everything when Comb cannot afford one contract
-(config.SPREAD_PRIORITY). With SPREAD_PRIORITY = None the cash is split by
-SPREAD_SHARES instead (7% Nectar / 93% Comb, the original design).
-
-The rules are NOT backtested. Related tests in this repo (0DTE condor, 30-45 DTE
-put spreads) were negative.
+The rules are NOT backtested in this form (backtest/spread_strategies.py tested
+the 2026-11-14 version: both NO-GO).
 
     python spread_bot.py                 # loop forever (orders if SPREAD_SUBMIT)
-    python spread_bot.py --now           # one pass right now, dry-run
+    python spread_bot.py --now           # dry-run: what it would open at the next entry day
     python spread_bot.py --now --submit  # one pass right now, real paper orders
-    python spread_bot.py --status        # state file + account
+    python spread_bot.py --status        # state, marks and $ left to the take, account
     python spread_bot.py --clear-halt    # resume entries after a manual check
-
-Spec: docs/superpowers/specs/2026-11-14-spread-bot-design.md
 """
 from __future__ import annotations
 
@@ -73,6 +72,8 @@ _LOCK = None
 STATE_PATH = os.path.join(config.LOG_DIR, "spread_state.json")
 CSV_PATH = os.path.join(config.LOG_DIR, "spread_trades.csv")
 STRATEGIES = ("nectar", "comb")
+PAPER_HOST = "https://paper-api.alpaca.markets"     # hard-coded; tests/test_spread_bot.py pins it
+ORDER_WAIT = 45                                       # seconds an order may work before it is cancelled
 
 
 # ── State ─────────────────────────────────────────────────────────────────────
@@ -82,7 +83,8 @@ def empty_state() -> dict:
     up for the day}. entered: {strategy: date of its last entry}. next_try:
     {strategy: time before which it does not retry}. halted: reason or None."""
     return {"nectar": None, "comb": None, "skipped": {}, "halted": None,
-            "entered": {}, "next_try": {}, "warned": {}}
+            "entered": {}, "next_try": {}, "warned": {},
+            "day": {"date": None, "realized": {}, "base": {}, "blocked": []}}
 
 
 def load_state() -> dict:
@@ -126,6 +128,26 @@ def take_lock() -> bool:
     return True
 
 
+# ── Paper host ────────────────────────────────────────────────────────────────
+
+class LiveHostRefused(RuntimeError):
+    pass
+
+
+def host_of(trading) -> str:
+    url = getattr(trading, "_base_url", "")
+    return str(getattr(url, "value", url)).rstrip("/")
+
+
+def submit(trading, req):
+    """The only way an order leaves this bot: refused unless the client points
+    at the paper host."""
+    host = host_of(trading)
+    if host != PAPER_HOST:
+        raise LiveHostRefused(f"refusing to send an order to {host!r}: only {PAPER_HOST} is allowed")
+    return trading.submit_order(req)
+
+
 # ── Orders ────────────────────────────────────────────────────────────────────
 
 def build_order(legs: list[dict], qty: int, price: float, opening: bool) -> LimitOrderRequest:
@@ -164,7 +186,7 @@ def work(trading, legs: list[dict], qty: int, start_price: float, opening: bool,
         if price == last_price:
             continue
         last_price = price
-        order = trading.submit_order(build_order(legs, qty, price, opening))
+        order = submit(trading, build_order(legs, qty, price, opening))
         logger.info("%s submitted: qty=%d price=%.2f (step %d) id=%s",
                     "OPEN" if opening else "CLOSE", qty, price, n, order.id)
         order = _poll(trading, str(order.id), step_wait)
@@ -211,16 +233,18 @@ def trading_days(trading, day: dt.date) -> set[dt.date]:
     return {c.date for c in cal}
 
 
-def put_deltas(opt, expiry: dt.date, spot: float) -> dict[float, float]:
-    """{strike: delta} of the OTM SPY puts of `expiry` that carry a delta."""
+def put_strikes(opt, expiry: dt.date, spot: float) -> list[float]:
+    """Listed SPY put strikes of `expiry` between 85% of spot and spot."""
     chain = opt.get_option_chain(OptionChainRequest(
         underlying_symbol=config.UNDERLYING, expiration_date=expiry, type=ContractType.PUT,
         strike_price_gte=round(spot * 0.85), strike_price_lte=round(spot)))
-    out = {}
-    for sym, snap in chain.items():
-        if snap.greeks is not None and snap.greeks.delta is not None:
-            out[int(sym[-8:]) / 1000.0] = float(snap.greeks.delta)
-    return out
+    return sorted(int(sym[-8:]) / 1000.0 for sym in chain)
+
+
+def years_to(expiry: dt.date, now: dt.datetime) -> float:
+    """Calendar time from `now` to 16:00 ET on `expiry`, in years."""
+    end = dt.datetime.combine(expiry, dt.time(16, 0), tzinfo=ET)
+    return max((end - now).total_seconds(), 0.0) / (365.0 * 86400.0)
 
 
 def _finish_plan(strategy: str, opt, expiry: dt.date, named: dict[str, tuple[str, float, bool]],
@@ -237,13 +261,13 @@ def _finish_plan(strategy: str, opt, expiry: dt.date, named: dict[str, tuple[str
     if mid > config.SPREAD_MAX_CREDIT_FRAC * width:
         return _no_plan(strategy, f"mid credit {mid:.2f} exceeds {config.SPREAD_MAX_CREDIT_FRAC:.0%} "
                                   f"of the {width:.0f}$ wing (bad quotes?)")
-    floor_credit = round(mid, 2) - config.SPREAD_MAX_CONCEDE * 0.01    # worst credit the entry accepts
-    if floor_credit <= 0:
+    limit = rules.open_limit(mid, config.SPREAD_OPEN_FRAC)          # the credit the order asks for
+    if limit <= 0:
         return _no_plan(strategy, f"mid credit {mid:.2f} too small to work an order")
     return {"strategy": strategy, "expiry": expiry.isoformat(), "legs": legs, "width": width,
-            "mid_credit": round(mid, 2), "natural_credit": round(nat, 2), "spot": round(spot, 2),
-            "strikes": {name: strike for name, (_, strike, _) in named.items()},
-            "loss": (width - floor_credit) * 100.0}
+            "mid_credit": round(mid, 2), "limit": limit, "natural_credit": round(nat, 2),
+            "spot": round(spot, 2), "strikes": {name: strike for name, (_, strike, _) in named.items()},
+            "loss": (width - limit) * 100.0}
 
 
 def plan_nectar(stock, opt, trading, day: dt.date) -> Optional[dict]:
@@ -255,11 +279,9 @@ def plan_nectar(stock, opt, trading, day: dt.date) -> Optional[dict]:
     k = rules.nectar_strikes(spot)
     named = {"short_put": ("PUT", k["short_put"], True), "long_put": ("PUT", k["long_put"], False),
              "short_call": ("CALL", k["short_call"], True), "long_call": ("CALL", k["long_call"], False)}
-    expiry = rules.nectar_expiry(day, days)
-    candidates = [expiry]
-    friday = expiry + dt.timedelta(days=1)
-    if expiry.weekday() == 3 and friday in days:     # Thursday strikes not listed -> Friday
-        candidates.append(friday)
+    candidates = rules.nectar_expiries(day, days)    # 3 days out, then later sessions through Friday
+    if not candidates:
+        return _no_plan("nectar", "no expiry left this week (never over the weekend)")
     err = None
     for exp in candidates:
         try:
@@ -270,16 +292,20 @@ def plan_nectar(stock, opt, trading, day: dt.date) -> Optional[dict]:
     return _no_plan("nectar", f"no usable quotes: {err}")
 
 
-def plan_comb(stock, opt, trading, day: dt.date) -> Optional[dict]:
+def plan_comb(stock, opt, trading, day: dt.date, now: Optional[dt.datetime] = None) -> Optional[dict]:
+    now = now or dt.datetime.now(ET)
     try:
         spot = spy_last(stock)
-        expiry = rules.comb_expiry(day, trading_days(trading, day))
-        deltas = put_deltas(opt, expiry, spot)
+        expiry = rules.comb_expiry_nearest(day, trading_days(trading, day))
+        if expiry is None:
+            return _no_plan("comb", "no Friday expiry 3-11 days out")
+        strikes = put_strikes(opt, expiry, spot)
     except Exception as exc:
         return _no_plan("comb", f"market data failed: {exc}")
-    short = rules.pick_delta_strike(deltas, config.SPREAD_COMB_DELTA)
+    short = rules.comb_short_strike(strikes, spot, years_to(expiry, now),
+                                    config.SPREAD_COMB_DELTA, config.SPREAD_COMB_IV)
     if short is None:
-        return _no_plan("comb", f"Alpaca returned no put deltas for {expiry}")
+        return _no_plan("comb", f"no listed OTM put strikes for {expiry}")
     width = float(config.SPREAD_COMB_WIDTH)
     named = {"short_put": ("PUT", short, True), "long_put": ("PUT", short - width, False)}
     try:
@@ -287,23 +313,22 @@ def plan_comb(stock, opt, trading, day: dt.date) -> Optional[dict]:
     except Exception as exc:
         return _no_plan("comb", f"no usable quotes: {exc}")
     if plan is not None:
-        plan["delta"] = deltas[short]
+        plan["delta"] = round(rules.bs_put_delta(spot, short, years_to(expiry, now), config.SPREAD_COMB_IV), 3)
     return plan
 
 
 def enter(trading, plan: dict, qty: int, submit: bool) -> Optional[dict]:
     """Work the opening order. Returns the position record, or None (dry-run / no fill)."""
     name = plan["strategy"]
-    logger.info("%s: %d x %s exp %s, mid credit %.2f, worst-case loss/contract %.0f$",
-                name, qty, plan["strikes"], plan["expiry"], plan["mid_credit"], plan["loss"])
+    logger.info("%s: %d x %s exp %s, mid credit %.2f, limit %.2f, worst-case loss/contract %.0f$",
+                name, qty, plan["strikes"], plan["expiry"], plan["mid_credit"], plan["limit"], plan["loss"])
     if not submit:
         logger.info("%s: dry-run, no order sent", name)
         return None
     equity = float(trading.get_account().equity)
-    order = work(trading, plan["legs"], qty, plan["mid_credit"], True, config.SPREAD_MAX_CONCEDE)
+    order = work(trading, plan["legs"], qty, plan["limit"], True, 0, step_wait=ORDER_WAIT)
     if order is None:
-        SKIP_REASON[name] = (f"kein Fill zwischen {plan['mid_credit']:.2f} und "
-                             f"{plan['mid_credit'] - config.SPREAD_MAX_CONCEDE * 0.01:.2f}")
+        SKIP_REASON[name] = f"kein Fill zu {plan['limit']:.2f} (90 % von Mid {plan['mid_credit']:.2f})"
         return None
     credit = abs(float(order.filled_avg_price))
     return {"strategy": name, "entry_date": dt.datetime.now(ET).date().isoformat(),
@@ -399,28 +424,25 @@ def reconcile(trading, state: dict, today: dt.date) -> dict:
     return state
 
 
-def ensure_buyback(trading, pos: dict, submit: bool, today: Optional[dt.date] = None) -> None:
-    """Keep one closing limit order at the buy-back price working. Option
-    orders are day orders, so this places a fresh one every trading day — but
-    only one per day: an order the broker rejected is not re-sent every tick."""
-    if not submit or pos["buyback"] < 0.01:
-        return
-    today = today or dt.datetime.now(ET).date()
-    if pos.get("tp_order_id"):
-        order = trading.get_order_by_id(pos["tp_order_id"])
-        if order.status == OrderStatus.FILLED or order.status not in TERMINAL:
-            return                      # filled (reconcile books it) or still working
-        if pos.get("tp_date") == today.isoformat():
-            if not pos.get("tp_warned"):
-                pos["tp_warned"] = True
-                logger.error("%s: buy-back order %s ended as %s", pos["strategy"], order.id, order.status)
-                notify(f"⚠️ **{pos['strategy'].upper()}**: Rückkauf-Order wurde vom Broker beendet "
-                       f"({order.status}). Heute kein neuer Versuch, morgen wieder.")
-            return
-    order = trading.submit_order(build_order(pos["legs"], pos["qty"], pos["buyback"], opening=False))
-    pos["tp_date"], pos["tp_warned"] = today.isoformat(), False
-    pos["tp_order_id"] = str(order.id)
-    logger.info("%s: buy-back order at %.2f placed (id=%s)", pos["strategy"], pos["buyback"], order.id)
+def drop_resting_order(trading, pos: dict):
+    """Positions opened by the 2026-11-14 version carry a resting buy-back
+    order. Cancel it (the take is now checked on the mark every minute).
+    Returns the Order if it had filled, else None."""
+    oid = pos.get("tp_order_id")
+    if not oid:
+        return None
+    try:
+        trading.cancel_order_by_id(oid)
+    except Exception as exc:
+        logger.info("%s: resting order %s not cancelled (%s)", pos["strategy"], oid, exc)
+    order = trading.get_order_by_id(oid)
+    if order.status == OrderStatus.FILLED:
+        return order
+    if order.status not in TERMINAL:
+        return None                     # cancel still pending: look again next minute
+    pos["tp_order_id"] = None
+    logger.info("%s: resting buy-back order %s cancelled", pos["strategy"], oid)
+    return None
 
 
 def close_debits(legs: list[dict], quotes: dict[str, tuple[float, float]]) -> tuple[float, float]:
@@ -438,42 +460,20 @@ def close_debits(legs: list[dict], quotes: dict[str, tuple[float, float]]) -> tu
     return round(mid, 4), round(nat, 4)
 
 
-def close_position(opt, trading, pos: dict):
-    """Expiry-day exit: cancel the buy-back order, then buy the position back.
-    Pass 1 works up from the mid in 1c steps, pass 2 from the natural debit in
-    5c steps, capped at the wing width (the most it can be worth). Returns the
-    filled Order (possibly the buy-back order itself) or None."""
-    if pos.get("tp_order_id"):
-        try:
-            trading.cancel_order_by_id(pos["tp_order_id"])
-        except Exception as exc:
-            logger.warning("%s: cancel of buy-back order failed (maybe done): %s", pos["strategy"], exc)
-        time.sleep(1)
-        order = trading.get_order_by_id(pos["tp_order_id"])
-        if order.status == OrderStatus.FILLED:
-            return order
+def mark_of(opt, pos: dict) -> float:
+    """Mid debit to buy the position back now."""
     symbols = {leg["symbol"]: leg["symbol"] for leg in pos["legs"]}
-    width = pos["width"]
-    for attempt, (natural, step, steps, wait) in enumerate([(False, 0.01, 10, 20), (True, 0.05, 12, 10)], 1):
-        try:
-            mid, nat = close_debits(pos["legs"], leg_quotes(opt, symbols, allow_zero_bid=True))
-            start = round(min(max(nat if natural else mid, 0.01), width), 2)
-        except Exception as exc:
-            logger.warning("close quotes failed (%s) — working from width/2", exc)
-            start = round(width / 2, 2)
-        logger.info("%s CLOSE pass %d: start debit %.2f, step %.2f x %d",
-                    pos["strategy"], attempt, start, step, steps)
-        filled = work(trading, pos["legs"], pos["qty"], start, False, steps,
-                      step=step, step_wait=wait, cap=width)
-        if filled is not None:
-            return filled
-    return None
+    mid, _ = close_debits(pos["legs"], leg_quotes(opt, symbols, allow_zero_bid=True))
+    return max(mid, 0.0)
+
+
+def close_once(trading, pos: dict, limit: float):
+    """One closing limit order at `limit`; cancelled if it has not filled
+    after ORDER_WAIT seconds. Returns the filled Order or None."""
+    return work(trading, pos["legs"], pos["qty"], limit, False, 0, step_wait=ORDER_WAIT, cap=pos["width"])
 
 
 # ── Daily loop ────────────────────────────────────────────────────────────────
-
-RETRY = dt.timedelta(minutes=15)      # wait this long after bad quotes / no fill
-
 
 def _hhmm(text: str) -> dt.time:
     return dt.time(int(text[:2]), int(text[3:5]))
@@ -503,67 +503,99 @@ def capital_and_free(trading, state: dict) -> tuple[float, float]:
     return round(cash - credits, 2), round(min(cash - reserved, float(acct.options_buying_power)), 2)
 
 
-def size(capital: float, free: float, loss: dict[str, float], state: dict) -> dict[str, int]:
-    """Contracts for the strategies entering now (`loss` = worst-case loss per
-    contract of each). With config.SPREAD_PRIORITY the strategies are served in
-    that order from the whole cash; otherwise by config.SPREAD_SHARES."""
-    order = getattr(config, "SPREAD_PRIORITY", None)
-    other_open = any(state[n] is not None for n in STRATEGIES)
-    if order:
-        if other_open:                                   # whatever cash the open position leaves free
-            return {n: rules.qty_alongside(capital, free, 1.0, loss[n]) for n in loss}
-        return rules.allocate_priority(capital, loss, tuple(order))
-    if other_open:
-        return {n: rules.qty_alongside(capital, free, config.SPREAD_SHARES[n], loss[n]) for n in loss}
-    return rules.allocate(capital, loss, config.SPREAD_SHARES)
+def roll_day(state: dict, today: dt.date) -> None:
+    """Start a fresh day record (realized P&L, mark baselines, blocked books)."""
+    if state["day"].get("date") != today.isoformat():
+        state["day"] = {"date": today.isoformat(), "realized": {}, "base": {}, "blocked": []}
+
+
+def day_pnl(state: dict, name: str) -> float:
+    day = state["day"]
+    pos = state[name]
+    open_part = (pos.get("unreal", 0.0) - day["base"].get(name, 0.0)) if pos is not None else 0.0
+    return round(day["realized"].get(name, 0.0) + open_part, 2)
+
+
+def _check_day_stop(state: dict, name: str) -> None:
+    pnl = day_pnl(state, name)
+    if pnl <= -config.SPREAD_DAY_STOP and name not in state["day"]["blocked"]:
+        state["day"]["blocked"].append(name)
+        logger.warning("%s: day P&L %.2f <= -%.0f -> no new entries until the next session",
+                       name, pnl, config.SPREAD_DAY_STOP)
+        notify(f"🛑 **{name.upper()}** liegt heute {pnl:+.2f} $ im Minus — keine neuen Einstiege bis zur "
+               f"nächsten Sitzung. Schließungen laufen weiter.")
+
+
+def note_mark(state: dict, name: str, pos: dict, mid_debit: float, today: dt.date) -> None:
+    """Record the position's unrealized P&L; the first mark of the day is the
+    baseline (0 for a position opened today, so entry costs count)."""
+    pos["mark"] = round(mid_debit, 4)
+    pos["unreal"] = round((pos["credit"] - mid_debit) * 100.0 * pos["qty"], 2)
+    base = 0.0 if pos.get("entry_date") == today.isoformat() else pos["unreal"]
+    state["day"]["base"].setdefault(name, base)
+    _check_day_stop(state, name)
+
+
+def book_close(state: dict, name: str, pnl: Optional[float]) -> None:
+    """Move a closed position's result into today's realized P&L of its book."""
+    pos = state[name]
+    if pnl is None:
+        pnl = (pos or {}).get("unreal", 0.0)
+    base = state["day"]["base"].pop(name, 0.0)
+    state["day"]["realized"][name] = round(state["day"]["realized"].get(name, 0.0) + pnl - base, 2)
+    if pos is not None:
+        pos["unreal"] = 0.0
+    _check_day_stop(state, name)
 
 
 def due_entries(now: dt.datetime, state: dict, days: set[dt.date]) -> list[str]:
-    """Strategies that should try to enter right now, Comb first.
-    Comb: Mondays. Nectar: Monday, or Tuesday if it has no entry yet this week
-    (Monday was a holiday, had no fill or no budget). One entry per strategy
-    and week; never while its position is open."""
+    """Books that may try to open right now, Comb first. Comb: Monday. Nectar:
+    Monday or Tuesday. Never while the book holds a position, never when the
+    book hit the day stop, only inside SPREAD_ENTRY_TIME-SPREAD_ENTRY_END."""
     today = now.date()
     if state["halted"] or today not in days:
         return []
     if not (_hhmm(config.SPREAD_ENTRY_TIME) <= now.time() < _hhmm(config.SPREAD_ENTRY_END)):
         return []
-    monday = today - dt.timedelta(days=today.weekday())
+    blocked = state["day"]["blocked"] if state["day"].get("date") == today.isoformat() else []
     out = []
     for name in ("comb", "nectar"):
-        if name not in config.SPREAD_ENABLED or state[name] is not None:
+        if name not in config.SPREAD_ENABLED or state[name] is not None or name in blocked:
             continue
         if today.weekday() > (0 if name == "comb" else 1):
             continue
-        last = state["entered"].get(name)
-        if last and dt.date.fromisoformat(last) >= monday:
-            continue
         if state["skipped"].get(name) == today.isoformat():
-            continue
-        retry = state["next_try"].get(name)
-        if retry and now < dt.datetime.fromisoformat(retry):
             continue
         out.append(name)
     return out
 
 
-def _give_up(state: dict, name: str, today: dt.date, text: str) -> None:
-    state["skipped"][name] = today.isoformat()
-    logger.info("%s: skipped today — %s", name, text)
-    notify(f"⏭️ **{name.upper()}** setzt heute aus: {text}")
+def _once(state: dict, name: str, key: str, today: dt.date, text: str) -> None:
+    """Log every time, but send a Discord message only once per day and reason."""
+    logger.info("%s: %s", name, text)
+    tag = f"{today.isoformat()}:{key}"
+    if state["warned"].get(name) != tag:
+        state["warned"][name] = tag
+        notify(f"⏭️ **{name.upper()}**: {text}")
 
 
-def _postpone(state: dict, name: str, now: dt.datetime, text: str) -> None:
-    state["next_try"][name] = (now + RETRY).isoformat()
-    logger.info("%s: retry in %s — %s", name, RETRY, text)
-    if state["warned"].get(name) != now.date().isoformat():
-        state["warned"][name] = now.date().isoformat()
-        notify(f"⏳ **{name.upper()}** noch nicht eingestiegen ({text}). Neuer Versuch alle 15 Minuten "
-               f"bis {config.SPREAD_ENTRY_END} ET.")
+def qty_for(name: str, plan: dict, free: float) -> int:
+    if name == "comb":
+        return rules.comb_qty(plan["limit"], free, config.SPREAD_BOOKS["comb"], plan["width"],
+                              config.SPREAD_COMB_QTY, config.SPREAD_COMB_BOOK_FRAC)
+    return rules.nectar_qty(plan["limit"], free, plan["width"],
+                            config.SPREAD_NECTAR_MAX_LOSS, config.SPREAD_NECTAR_MAX_QTY)
+
+
+def _closed(state: dict, name: str, pos: dict, reason: str, debit: float, trading) -> None:
+    record_exit(pos, reason, debit, trading)
+    book_close(state, name, round((pos["credit"] - debit) * 100.0 * pos["qty"], 2))
+    state[name] = None
+    save_state(state)
 
 
 def tick(now: dt.datetime, stock, opt, trading, state: dict, submit: bool) -> dict:
-    """One pass: reconcile, manage exits, then entries. Returns the new state."""
+    """One minute: reconcile, manage open positions, then entries."""
     today = now.date()
     ses = session(trading, today)
     if ses is None:
@@ -571,78 +603,70 @@ def tick(now: dt.datetime, stock, opt, trading, state: dict, submit: bool) -> di
     open_t, close_t, days = ses
     if not (open_t <= now.time() < close_t):
         return state
+    roll_day(state, today)
     state = reconcile(trading, state, today)
 
-    # 1. Exits: buy-back order every day, forced close on expiry day.
+    # 1. Open positions: take-profit on the mark, close on expiry day.
     for name in STRATEGIES:
         pos = state[name]
         if pos is None or pos.get("stuck"):
             continue
-        expiring = today >= dt.date.fromisoformat(pos["expiry"])
-        if expiring and now.time() >= rules.expiry_close_time(close_t):
-            if not submit:
-                logger.info("%s: dry-run, would close the expiring position now", name)
+        if submit:
+            filled = drop_resting_order(trading, pos)
+            if filled is not None:
+                _closed(state, name, pos, "buyback", abs(float(filled.filled_avg_price)), trading)
                 continue
-            order = close_position(opt, trading, pos)
-            if order is None:
-                notify(f"🚨 **{name.upper()}** ließ sich am Verfallstag nicht schließen — neuer Versuch läuft. "
-                       f"Bitte Konto prüfen, sonst droht Ausübung (SPY wird physisch geliefert)!")
-                continue
-            reason = "buyback" if str(order.id) == pos.get("tp_order_id") else "expiry_close"
-            record_exit(pos, reason, abs(float(order.filled_avg_price)), trading)
-            state[name] = None
-            save_state(state)
-        else:
-            ensure_buyback(trading, pos, submit, today)
+        try:
+            mid = mark_of(opt, pos)
+        except Exception as exc:
+            logger.warning("%s: no mark this minute (%s)", name, exc)
+            continue
+        note_mark(state, name, pos, mid, today)
+        expiring = (today >= dt.date.fromisoformat(pos["expiry"])
+                    and now.time() >= rules.expiry_close_time(close_t))
+        take = rules.take_reached(mid, pos["credit"], config.SPREAD_BUYBACK[name])
+        if not (expiring or take):
+            continue
+        reason = "buyback" if take else "expiry_close"
+        limit = rules.close_limit(mid, pos["width"], config.SPREAD_CLOSE_OVER)
+        if not submit:
+            logger.info("%s: dry-run, would close (%s) at %.2f (mid %.2f)", name, reason, limit, mid)
+            continue
+        order = close_once(trading, pos, limit)
+        if order is None:
+            if expiring:
+                _once(state, name, "close", today, f"Schließen am Verfallstag zu {limit:.2f} nicht gefüllt "
+                                                   f"(Mid {mid:.2f}) — neuer Versuch jede Minute.")
+            continue
+        _closed(state, name, pos, reason, abs(float(order.filled_avg_price)), trading)
 
     # 2. Entries.
-    due = due_entries(now, state, days)
-    if not due:
-        return state
-    end = dt.datetime.combine(today, _hhmm(config.SPREAD_ENTRY_END), tzinfo=now.tzinfo)
-    last_chance = now + RETRY >= end
-    plans = {n: (plan_comb if n == "comb" else plan_nectar)(stock, opt, trading, today) for n in due}
-    missing = [n for n in due if plans[n] is None]
-    if missing and not last_chance:
-        # Both wait, so that a strategy with bad quotes right now does not lose its share.
-        for n in due:
-            _postpone(state, n, now, SKIP_REASON.get(n, "keine Kurse") if n in missing
-                      else f"wartet auf {', '.join(missing)}")
-        return state
-    for n in missing:
-        _give_up(state, n, today, SKIP_REASON.get(n, "keine brauchbaren Kurse"))
-    ready = [n for n in due if plans[n] is not None]
-    if not ready:
-        return state
-
-    capital, free = capital_and_free(trading, state)
-    qty = size(capital, free, {n: plans[n]["loss"] for n in ready}, state)
-    logger.info("capital %.2f, free cash %.2f -> contracts %s", capital, free, qty)
-
-    for name in ready:
-        plan = plans[name]
-        _, free = capital_and_free(trading, state)           # cash may have moved with the last fill
-        q = min(qty.get(name, 0), int(max(free, 0.0) // plan["loss"]))
+    for name in due_entries(now, state, days):
+        plan = (plan_comb if name == "comb" else plan_nectar)(stock, opt, trading, today)
+        if plan is None:
+            _once(state, name, "plan", today, f"kein Einstieg — {SKIP_REASON.get(name, 'keine Kurse')}")
+            continue
+        _, free = capital_and_free(trading, state)
+        q = qty_for(name, plan, free)
         if q <= 0:
-            _give_up(state, name, today, f"Budget reicht nicht für einen Kontrakt (Maximalverlust "
-                                         f"{plan['loss']:.0f} $ pro Kontrakt, frei {free:.0f} $).")
+            _once(state, name, "budget", today,
+                  f"Budget reicht nicht (Maximalverlust {plan['loss']:.0f} $ pro Kontrakt, frei {free:.0f} $).")
             continue
         pos = enter(trading, plan, q, submit)
         if pos is None:
             if not submit:
-                state["skipped"][name] = today.isoformat()   # dry-run: plan once, not every 30 s
-            elif last_chance:
-                _give_up(state, name, today, SKIP_REASON.get(name, "kein Fill"))
+                state["skipped"][name] = today.isoformat()   # dry-run: plan once, not every minute
             else:
-                _postpone(state, name, now, SKIP_REASON.get(name, "kein Fill"))
+                _once(state, name, "fill", today,
+                      SKIP_REASON.get(name, "kein Fill") + " — neuer Versuch jede Minute.")
             continue
         state[name] = pos
         state["entered"][name] = today.isoformat()
+        state["day"]["base"][name] = 0.0
         save_state(state)
         notify(f"📗 **{name.upper()}** eröffnet: {q}x, Verfall {pos['expiry']}, Credit {pos['credit']:.2f} "
-               f"(Mid {pos['mid_credit']:.2f}), Rückkauf bei {pos['buyback']:.2f}, "
+               f"(Mid {pos['mid_credit']:.2f}), Ziel {pos['buyback']:.2f}, "
                f"Maximalverlust {(pos['width'] - pos['credit']) * 100 * q:.0f} $")
-        ensure_buyback(trading, pos, submit, today)
     return state
 
 
@@ -657,7 +681,6 @@ def preview(stock, opt, trading, state: dict) -> None:
         day += dt.timedelta(days=1)
     capital, free = capital_and_free(trading, state)
     print(f"Entry day {day} ({day:%A}) | capital {capital:.2f} $ | free cash {free:.2f} $")
-    plans = {}
     for name in (("comb", "nectar") if day.weekday() == 0 else ("nectar",)):
         if name not in config.SPREAD_ENABLED:
             print(f"  {name}: switched off (config.SPREAD_ENABLED)")
@@ -669,13 +692,10 @@ def preview(stock, opt, trading, state: dict) -> None:
         if plan is None:
             print(f"  {name}: no entry — {SKIP_REASON.get(name)}")
             continue
-        plans[name] = plan
-    qty = size(capital, free, {n: p["loss"] for n, p in plans.items()}, state)
-    for name, p in plans.items():
-        q = min(qty.get(name, 0), int(max(free, 0.0) // p["loss"]))
-        print(f"  {name}: SPY {p['spot']:.2f}, strikes {p['strikes']}, exp {p['expiry']}, "
-              f"mid credit {p['mid_credit']:.2f} (natural {p['natural_credit']:.2f}), "
-              f"max loss/contract {p['loss']:.0f} $ -> {q} contract(s)")
+        q = qty_for(name, plan, free)
+        print(f"  {name}: SPY {plan['spot']:.2f}, strikes {plan['strikes']}, exp {plan['expiry']}, "
+              f"mid credit {plan['mid_credit']:.2f} -> limit {plan['limit']:.2f}, "
+              f"max loss/contract {plan['loss']:.0f} $ -> {q} contract(s)")
     print("Dry-run: no order sent.")
 
 
@@ -711,7 +731,20 @@ def main() -> int:
     trading = TradingClient(config.ALPACA_API_KEY, config.ALPACA_API_SECRET, paper=True)
     if args.status:
         acct = trading.get_account()
-        print(json.dumps(load_state(), indent=1))
+        st = load_state()
+        print(json.dumps(st, indent=1))
+        for name in STRATEGIES:
+            pos = st[name]
+            if pos is None:
+                continue
+            try:
+                mid = mark_of(opt, pos)
+            except Exception as exc:
+                print(f"{name}: no mark ({exc})")
+                continue
+            take = pos["credit"] * config.SPREAD_BUYBACK[name]
+            print(f"{name}: {pos['qty']}x exp {pos['expiry']} | credit {pos['credit']:.2f} | mark {mid:.2f} | "
+                  f"take at {take:.2f} -> {(mid - take) * 100 * pos['qty']:.0f} $ to go")
         print(f"cash {float(acct.cash):.2f} | equity {float(acct.equity):.2f} | "
               f"options buying power {float(acct.options_buying_power):.2f}")
         for p in trading.get_all_positions():
@@ -740,8 +773,8 @@ def main() -> int:
             if last_alarm is None or time.time() - last_alarm > 1800:     # at most one alarm per 30 min
                 notify(f"🚨 **SPREAD-Bot Fehler:** `{type(exc).__name__}: {str(exc)[:300]}`")
                 last_alarm = time.time()
-            time.sleep(120)
-        time.sleep(30)
+            time.sleep(60)
+        time.sleep(60 - dt.datetime.now(ET).second)          # once a minute, on the minute
 
 
 if __name__ == "__main__":

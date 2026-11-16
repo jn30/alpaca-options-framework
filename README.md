@@ -277,36 +277,37 @@ There's also a data completeness issue: if an option spikes and reverses within 
 
 ## Spread Bot (Nectar + Comb)
 
-`spread_bot.py` trades two fixed SPY rule sets on the paper account and sizes them from the
-account's cash. Set `STRATEGY = "spreads"` in `config.py` (or `BOT_STRATEGY=spreads`); it never
-runs next to the trend bot. **The rules are not backtested** — related tests in this repo
-(0DTE condor, 30-45 DTE put spreads) were negative.
+`spread_bot.py` trades two SPY books on the Alpaca **paper** account. Set `STRATEGY = "spreads"` in
+`config.py` (or `BOT_STRATEGY=spreads`); it never runs next to the trend bot. Every order goes
+through one function that refuses to send unless the client points at
+`https://paper-api.alpaca.markets`; a unit test fails if that constant changes.
 
-| | Nectar | Comb |
+| | Nectar (~5,000 $ book) | Comb (~25,000 $ book) |
 |---|---|---|
-| Structure | iron condor | put credit spread |
-| Entry | Monday 10:00 ET, else Tuesday | Monday 10:00–15:00 ET |
-| Strikes | short put $2.50 under SPY, $5 wing; short call 3% over SPY, $3 wing | short put nearest 15 delta, long put $10 below |
-| Expiry | Thursday (Friday for a Tuesday entry) | next Friday at least 7 days out |
-| Buy-back | at 75% of the credit | at 50% of the credit |
+| Structure | iron condor | bull put spread |
+| Entry | Monday or Tuesday, 10:00–15:00 ET | Monday 10:00–15:00 ET |
+| Strikes | short put round(SPY − 2.50), $5 wing; short call round(SPY × 1.03), $3 wing | listed put nearest 15 delta at 18% IV, $10 wing |
+| Expiry | 3 calendar days out, else the next listed session through Friday; never over the weekend | the Friday nearest 7 days, 3–11 days out |
+| Size | (5 − credit) × 100 × qty inside 1,000 $ and inside the cash, max 10 | 10 when (10 − credit) × 100 × 10 fits the cash and ≤ 40% of the book, else none |
+| Take | mid cost to close ≤ 75% of the credit | mid ≤ 50% of the credit |
 | Otherwise | closed 30 min before the bell on expiry day | same |
 
-Sizing: the worst-case loss of all open positions, `(wing − credit) × 100` per contract, may use
-the whole cash balance — no margin, no stop-loss. Comb is served first from the whole cash and
-Nectar gets what is left, including everything when Comb cannot afford a contract
-(`SPREAD_PRIORITY`; set it to `None` for the original 7% / 93% split in `SPREAD_SHARES`).
-One position per strategy at a time. `SPREAD_ENABLED` lists the strategies that may open new
-positions.
+Checked once a minute while the US cash session is open (America/New_York). One position per
+book. Each open and close is one multi-leg limit order: open at 90% of the mid credit, close paying
+at most 15% over the mid debit; no fill → cancel, try again next minute. No roll, no stop-loss.
+A book down 100 $ or more on the day (realized + change of its open mark) opens nothing new until
+the next session; its closes still go out. `SPREAD_ENABLED` lists the books that may open.
 
-Backtest (`python backtest/spread_strategies.py`, 2024-02 to 2026-10, per contract, 0.03 $ slippage
-per leg): Nectar -11.81 $/trade, negative in all three years; Comb +9.02 $/trade, not significant
-(t 0.75), 2024 negative. Stop-losses made both worse. Both are NO-GO by the pre-registered criteria.
+Backtest of the 2026-11-14 version (`python backtest/spread_strategies.py`, 2024-02 to 2026-10,
+per contract, 0.03 $ slippage per leg): Nectar −11.81 $/trade, negative in all three years; Comb
++9.02 $/trade, not significant (t 0.75), 2024 negative. Stop-losses made both worse. Both NO-GO.
+The current rules (Comb ~4 days to expiry, 90%/115% limits, fixed sizes) are not backtested.
 
 ```bash
 python spread_bot.py                 # loop forever (run_spreads.bat restarts it after a crash)
-python spread_bot.py --now           # dry-run: what it would trade at the next entry day
+python spread_bot.py --now           # dry-run: what it would open at the next entry day
 python spread_bot.py --now --submit  # one real pass right now (paper orders)
-python spread_bot.py --status        # state file, cash, positions
+python spread_bot.py --status        # state, mark and $ left to the take, cash, positions
 python spread_bot.py --clear-halt    # resume entries after an assignment / leg mismatch halt
 python -m pytest tests               # rule and loop tests, no network
 ```

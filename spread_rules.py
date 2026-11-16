@@ -150,3 +150,85 @@ def qty_alongside(capital: float, free_cash: float, share: float, loss_per_contr
     """Contracts for a strategy entering while the other one is open: its own
     share of the capital, but never more than the cash still free."""
     return _fit(min(capital * share, free_cash), loss_per_contract)
+
+
+# ── Rules of 2026-11-16 (user spec "Step 5"; the functions above stay for the backtest) ──
+
+def nectar_expiries(entry: dt.date, trading_days: set[dt.date]) -> list[dt.date]:
+    """Expiries to try for Nectar, in order: 3 calendar days out (Thursday from
+    Monday, Friday from Tuesday), then each later session through Friday of
+    the same week. Never past that Friday."""
+    friday = entry + dt.timedelta(days=4 - entry.weekday())
+    out, d = [], entry + dt.timedelta(days=3)
+    while d <= friday:
+        if d in trading_days:
+            out.append(d)
+        d += dt.timedelta(days=1)
+    return out
+
+
+def comb_expiry_nearest(entry: dt.date, trading_days: set[dt.date]) -> Optional[dt.date]:
+    """The Friday nearest to 7 days after `entry`, 3 to 11 days out. A holiday
+    Friday becomes that week's last session if it is still 3+ days out."""
+    fridays = [entry + dt.timedelta(days=n) for n in range(3, 12)
+               if (entry + dt.timedelta(days=n)).weekday() == 4]
+    for f in sorted(fridays, key=lambda f: (abs((f - entry).days - 7), f)):
+        try:
+            d = _trading_day(f, trading_days)
+        except ValueError:
+            continue
+        if 3 <= (d - entry).days <= 11:
+            return d
+    return None
+
+
+def bs_put_delta(spot: float, strike: float, t: float, vol: float,
+                 rate: float = 0.04, div: float = 0.013) -> float:
+    """Black-Scholes delta of a European put (negative)."""
+    d1 = (math.log(spot / strike) + (rate - div + 0.5 * vol * vol) * t) / (vol * math.sqrt(t))
+    return math.exp(-div * t) * (0.5 * (1.0 + math.erf(d1 / math.sqrt(2.0))) - 1.0)
+
+
+def comb_short_strike(strikes: list[float], spot: float, t: float,
+                      delta: float = 0.15, vol: float = 0.18) -> Optional[float]:
+    """Listed OTM put strike whose delta, at a flat `vol`, is nearest -`delta`."""
+    otm = [k for k in strikes if k < spot]
+    if not otm or t <= 0:
+        return None
+    return min(otm, key=lambda k: (abs(abs(bs_put_delta(spot, k, t, vol)) - delta), -k))
+
+
+def open_limit(mid_credit: float, frac: float = 0.90) -> float:
+    """Opening limit: `frac` of the mid credit, to the cent."""
+    return round(mid_credit * frac + 1e-9, 2)
+
+
+def close_limit(mid_debit: float, width: float, over: float = 0.15) -> float:
+    """Closing limit: at most `over` above the mid debit (rounded down to the
+    cent), at least 0.01, never above the width."""
+    px = math.floor(round(max(mid_debit, 0.0) * (1.0 + over) * 100.0, 6)) / 100.0
+    return round(min(max(px, 0.01), width), 2)
+
+
+def take_reached(mid_debit: float, credit: float, frac: float) -> bool:
+    """Take-profit: the mid cost to close is `frac` of the credit or less."""
+    return mid_debit <= credit * frac + 1e-9
+
+
+def nectar_qty(credit: float, free_cash: float, width: float = NECTAR_PUT_WIDTH,
+               max_loss: float = 1000.0, max_qty: int = 10) -> int:
+    """(width - credit) * 100 * qty stays inside `max_loss` and inside the cash; cap `max_qty`."""
+    if credit <= 0 or credit >= width:
+        return 0
+    loss = (width - credit) * 100.0
+    return max(0, min(max_qty, _fit(max_loss, loss), _fit(free_cash, loss)))
+
+
+def comb_qty(credit: float, free_cash: float, book: float, width: float = 10.0,
+             qty: int = 10, book_frac: float = 0.40) -> int:
+    """`qty` contracts when (width - credit) * 100 * qty fits the cash and is at
+    most `book_frac` of the book, else 0."""
+    if credit <= 0 or credit >= width:
+        return 0
+    risk = (width - credit) * 100.0 * qty
+    return qty if risk <= free_cash and risk <= book * book_frac else 0

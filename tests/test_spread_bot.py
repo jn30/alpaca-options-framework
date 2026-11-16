@@ -63,12 +63,11 @@ def test_plan_nectar_builds_condor_from_spot(monkeypatch):
         "short_call": (0.05, 0.07), "long_call": (0.01, 0.03)})
     p = b.plan_nectar(None, None, None, D(2026, 11, 16))
     assert p["expiry"] == "2026-11-19" and p["width"] == 5.0
-    assert p["mid_credit"] == 1.24
+    assert p["mid_credit"] == 1.24 and p["limit"] == 1.12            # opens at 90% of the mid
     assert [(l["symbol"], l["short"]) for l in p["legs"]] == [
         ("SPY261119P00670000", True), ("SPY261119P00665000", False),
         ("SPY261119C00693000", True), ("SPY261119C00696000", False)]
-    # worst accepted credit = mid - 3 cents -> loss per contract (5 - 1.21) * 100
-    assert round(p["loss"], 2) == 379.0
+    assert round(p["loss"], 2) == 388.0                               # (5 - 1.12) * 100
 
 
 def test_plan_nectar_falls_back_to_friday_when_thursday_is_not_quotable(monkeypatch):
@@ -79,6 +78,13 @@ def test_plan_nectar_falls_back_to_friday_when_thursday_is_not_quotable(monkeypa
                 "short_call": (0.05, 0.07), "long_call": (0.01, 0.03)}
     _patch_market(monkeypatch, quotes)
     assert b.plan_nectar(None, None, None, D(2026, 11, 16))["expiry"] == "2026-11-20"
+
+
+def test_plan_nectar_never_crosses_the_weekend(monkeypatch):
+    def quotes(opt, syms, **k):
+        raise RuntimeError("no usable quote")
+    _patch_market(monkeypatch, quotes)
+    assert b.plan_nectar(None, None, None, D(2026, 11, 17)) is None     # Friday only, not listed
 
 
 def test_plan_skips_on_unusable_quote(monkeypatch):
@@ -96,19 +102,30 @@ def test_plan_skips_when_credit_too_rich(monkeypatch):
     assert b.plan_nectar(None, None, None, D(2026, 11, 16)) is None
 
 
-def test_plan_comb_picks_15_delta_put_and_10_wide_wing(monkeypatch):
+def test_plan_comb_picks_the_15_delta_put_at_18_vol_and_a_10_wide_wing(monkeypatch):
     _patch_market(monkeypatch, lambda opt, syms, **k: {
         "short_put": (0.90, 1.00), "long_put": (0.40, 0.50)})
-    monkeypatch.setattr(b, "put_deltas", lambda opt, expiry, spot: {648.0: -0.13, 650.0: -0.16, 655.0: -0.22})
-    p = b.plan_comb(None, None, None, D(2026, 11, 16))
-    assert p["expiry"] == "2026-11-27" and p["width"] == 10.0 and p["mid_credit"] == 0.50
+    strikes = [float(k) for k in range(640, 672)]
+    monkeypatch.setattr(b, "put_strikes", lambda opt, expiry, spot: strikes)
+    now = dt.datetime(2026, 11, 16, 10, 5, tzinfo=b.ET)
+    p = b.plan_comb(None, None, None, D(2026, 11, 16), now=now)
+    expiry = D(2026, 11, 20)                                          # Friday nearest 7 days
+    short = b.rules.comb_short_strike(strikes, 672.40, b.years_to(expiry, now), 0.15, 0.18)
+    assert p["expiry"] == "2026-11-20" and p["width"] == 10.0 and p["mid_credit"] == 0.50
+    assert p["limit"] == 0.45
     assert [(l["symbol"], l["short"]) for l in p["legs"]] == [
-        ("SPY261127P00650000", True), ("SPY261127P00640000", False)]
+        (b.build_occ_symbol("SPY", expiry, "PUT", short), True),
+        (b.build_occ_symbol("SPY", expiry, "PUT", short - 10), False)]
 
 
-def test_plan_comb_skips_without_deltas(monkeypatch):
+def test_years_to_counts_to_16_00_et_on_expiry_day():
+    now = dt.datetime(2026, 11, 16, 16, 0, tzinfo=b.ET)
+    assert abs(b.years_to(D(2026, 11, 20), now) - 4 / 365) < 1e-9
+
+
+def test_plan_comb_skips_without_listed_strikes(monkeypatch):
     _patch_market(monkeypatch, lambda *a, **k: {})
-    monkeypatch.setattr(b, "put_deltas", lambda opt, expiry, spot: {})
+    monkeypatch.setattr(b, "put_strikes", lambda opt, expiry, spot: [])
     assert b.plan_comb(None, None, None, D(2026, 11, 16)) is None
 
 
@@ -194,43 +211,6 @@ def test_reconcile_halts_on_partial_legs(monkeypatch):
     assert out["halted"] == "legs_mismatch" and out["comb"] is not None and seen == []
 
 
-def test_ensure_buyback_places_closing_limit_once():
-    t = FakeTrading()
-    pos = dict(POS)
-    b.ensure_buyback(t, pos, submit=True)
-    assert pos["tp_order_id"] == "new-1" and len(t.submitted) == 1
-    assert t.submitted[0].limit_price == 0.25 and t.submitted[0].legs[0].side.value == "buy"
-    t._o["new-1"] = O("new-1", b.OrderStatus.NEW)
-    b.ensure_buyback(t, pos, submit=True)            # still working -> no second order
-    assert len(t.submitted) == 1
-
-
-def test_ensure_buyback_replaces_expired_day_order():
-    t = FakeTrading([], {"old": O("old", b.OrderStatus.EXPIRED)})
-    pos = {**POS, "tp_order_id": "old"}
-    b.ensure_buyback(t, pos, submit=True)
-    assert pos["tp_order_id"] == "new-1"
-
-
-def test_ensure_buyback_does_not_resend_a_rejected_order_the_same_day(monkeypatch):
-    monkeypatch.setattr(b, "notify", lambda *_: None)
-    t = FakeTrading()
-    pos = dict(POS)
-    b.ensure_buyback(t, pos, submit=True, today=TODAY)
-    t._o["new-1"] = O("new-1", b.OrderStatus.REJECTED)
-    b.ensure_buyback(t, pos, submit=True, today=TODAY)
-    b.ensure_buyback(t, pos, submit=True, today=TODAY)
-    assert len(t.submitted) == 1
-    b.ensure_buyback(t, pos, submit=True, today=TODAY + dt.timedelta(days=1))   # next day: fresh order
-    assert len(t.submitted) == 2
-
-
-def test_ensure_buyback_dry_run_sends_nothing():
-    t = FakeTrading()
-    b.ensure_buyback(t, dict(POS), submit=False)
-    assert t.submitted == []
-
-
 def test_record_exit_writes_csv_row_with_pnl(tmp_path, monkeypatch):
     monkeypatch.setattr(b, "notify", lambda *_: None)
     monkeypatch.setattr(b, "CSV_PATH", str(tmp_path / "t.csv"))
@@ -247,3 +227,32 @@ def test_close_debits_mid_and_natural():
     q = {"SPY261127P00650000": (0.90, 1.00), "SPY261127P00640000": (0.40, 0.50)}
     # mid: 0.95 - 0.45 ; natural: pay the short's ask 1.00, get the long's bid 0.40
     assert b.close_debits(LEGS, q) == (0.50, 0.60)
+
+
+# ── Paper host: hard-coded, checked on every order ───────────────────────────
+
+def test_paper_host_is_hard_coded():
+    # Changing this constant must fail the build.
+    assert b.PAPER_HOST == "https://paper-api.alpaca.markets"
+
+
+def test_alpaca_paper_client_points_at_the_paper_host():
+    client = b.TradingClient("PKTEST", "secret", paper=True)
+    assert b.host_of(client) == b.PAPER_HOST
+
+
+def test_orders_are_refused_on_a_live_client():
+    client = b.TradingClient("AKTEST", "secret", paper=False)
+    sent = []
+    client.submit_order = lambda req: sent.append(req)
+    import pytest
+    with pytest.raises(b.LiveHostRefused):
+        b.submit(client, b.build_order(LEGS, 1, 0.50, opening=True))
+    assert sent == []
+
+
+def test_orders_pass_on_the_paper_client():
+    client = b.TradingClient("PKTEST", "secret", paper=True)
+    sent = []
+    client.submit_order = lambda req: sent.append(req) or "ok"
+    assert b.submit(client, b.build_order(LEGS, 1, 0.50, opening=True)) == "ok" and len(sent) == 1

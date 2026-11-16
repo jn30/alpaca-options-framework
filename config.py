@@ -74,27 +74,24 @@ CONDOR_MAX_CREDIT_FRAC = 0.60  # sanity: skip if mid credit exceeds this share o
 CONDOR_LOOP         = True      # keep the process running: one condor per trading day, no daily restart
 CONDOR_SUBMIT       = True      # False = dry-run (prints the order); True = send real PAPER orders
 
-# Spread bot (spread_bot.py): Nectar (iron condor) + Comb (15-delta put credit spread) on SPY.
-# The rules themselves live in spread_rules.py and are NOT backtested.
-# Sizing: all open positions together may put the whole cash balance at risk (no margin).
-SPREAD_SHARES        = {"nectar": 0.07, "comb": 0.93}   # split of the cash, ratio of the original fixed sizes
-                                                        # (2 condors ~ $700 risk : 10 spreads ~ $9,500 risk);
-                                                        # a strategy that can't afford 1 contract hands its share over
-SPREAD_ENABLED       = ("comb", "nectar")   # strategies that may open NEW positions. User decision 2026-11-14:
-                                            # both stay on, Nectar only with what Comb leaves (SPREAD_PRIORITY).
-                                            # Backtest: Nectar negative in 2024, 2025 and 2026; drop "nectar" to
-                                            # switch it off.
-SPREAD_PRIORITY      = ("comb", "nectar")   # served in this order from the WHOLE cash: Comb takes what it can,
-                                            # Nectar only what is left (also when Comb cannot afford a contract).
-                                            # User decision 2026-11-14 after the backtest (Nectar negative in every
-                                            # year, Comb slightly positive). None = use SPREAD_SHARES instead.
-SPREAD_ENTRY_TIME    = "10:00"   # ET
+# Spread bot (spread_bot.py): two SPY books, rules of 2026-11-16 (user spec "Step 5").
+# Not backtested in this form; the 2026-11-14 version was NO-GO (backtest/spread_strategies.py).
+SPREAD_ENABLED       = ("comb", "nectar")   # books that may open NEW positions; open ones are always managed
+SPREAD_BOOKS         = {"nectar": 5000.0, "comb": 25000.0}   # $ per book (Comb risk <= 40% of its book)
+SPREAD_ENTRY_TIME    = "10:00"   # ET, both books (Comb by rule; Nectar by the 2026-11-14 design)
 SPREAD_ENTRY_END     = "15:00"   # ET, no new entry after this
-SPREAD_BUYBACK       = {"nectar": 0.75, "comb": 0.50}   # buy back at this share of the credit
-SPREAD_COMB_DELTA    = -0.15
+SPREAD_OPEN_FRAC     = 0.90      # open at 90% of the mid credit
+SPREAD_CLOSE_OVER    = 0.15      # close paying at most 15% over the mid debit
+SPREAD_BUYBACK       = {"nectar": 0.75, "comb": 0.50}   # take when the mid debit is this share of the credit or less
+SPREAD_DAY_STOP      = 100.0     # a book down this much on the day opens nothing new until the next session
+SPREAD_NECTAR_MAX_LOSS = 1000.0  # (5 - credit) x 100 x qty stays inside this
+SPREAD_NECTAR_MAX_QTY  = 10
+SPREAD_COMB_DELTA    = 0.15      # short put nearest this delta ...
+SPREAD_COMB_IV       = 0.18      # ... computed at this implied vol (Black-Scholes, r 4%, q 1.3%)
 SPREAD_COMB_WIDTH    = 10.0
-SPREAD_MAX_CONCEDE   = 3         # cents conceded from mid while working an entry
-SPREAD_MAX_CREDIT_FRAC = 0.60    # skip if mid credit exceeds this share of the width (bad quotes)
+SPREAD_COMB_QTY      = 10        # all or nothing
+SPREAD_COMB_BOOK_FRAC = 0.40
+SPREAD_MAX_CREDIT_FRAC = 0.60    # sanity: skip if mid credit exceeds this share of the width (bad quotes)
 SPREAD_SUBMIT        = True      # False = log decisions only
 
 # ── Universe ───────────────────────────────────────────────────────────────────
